@@ -242,7 +242,6 @@ with st.sidebar:
     all_uploaded_files = st.file_uploader("将所有 Excel/CSV 拖拽至此", accept_multiple_files=True, label_visibility="collapsed")
 
     st.header("⚙️ 3. 运营参数调整")
-    # ✅ 核心更新：根据业务需求调整默认天数
     TARGET_DAYS_TRANSIT = st.number_input("在途目标天数", value=60)
     TARGET_DAYS_STOCK = st.number_input("库存目标天数", value=30)
     TARGET_DAYS_TOTAL = TARGET_DAYS_TRANSIT + TARGET_DAYS_STOCK
@@ -255,7 +254,6 @@ if run_btn:
     if not all_uploaded_files:
         st.error("❌ 请先上传数据表格！")
     else:
-        # --- 🛡️ 严谨级分发引擎：强制基于 SOP 命名规范路由 ---
         unique_files = deduplicate_uploaded_files(all_uploaded_files)
         files_product, files_7d, files_14d, files_inv, files_age = [], [], [], [], []
         unrecognized_files = []
@@ -373,9 +371,6 @@ if run_btn:
             merged = merge_traffic_with_shop_validation(merged, df_14)
             merged = merged.loc[:, ~merged.columns.duplicated()]
 
-            # ---------------------------------------------------------
-            # ⬇️ 方案 A 核心：挂载总库存
-            # ---------------------------------------------------------
             if df_inventory is not None and not df_inventory.empty:
                 df_inventory = df_inventory.loc[:, ~df_inventory.columns.duplicated()]
                 merged = pd.merge(merged, df_inventory, left_on='SKU_KEY', right_on='join_key', how='left')
@@ -438,7 +433,6 @@ if run_btn:
             valid_inv = [c for c in inv_cols if c in merged.columns]
             merged['待到合计'] = merged[valid_inv].sum(axis=1)
 
-            # --- 计算 SKU 维度的总需求 ---
             merged['预测日销量'] = (merged['7天日均订单'] + merged['14天日均订单']) / 2
             sku_agg = merged.groupby('MSKU').agg({'预测日销量': 'sum'}).rename(columns={'预测日销量': 'SKU_总日均'})
             merged = pd.merge(merged, sku_agg, on='MSKU', how='left')
@@ -448,10 +442,8 @@ if run_btn:
             merged['建议补货量'] = merged.apply(lambda x: max(0, x['理论需求量'] - x['总供给']), axis=1)
             merged['预计可售天数'] = merged.apply(lambda x: x['总供给'] / x['SKU_总日均'] if x['SKU_总日均'] > 0.1 else 999, axis=1)
 
-            # --- 方案 A 精髓：把 SKU 按销量倒序排，让“主店铺”排在第一行 ---
             merged = merged.sort_values(by=['MSKU', '7天销售额'], ascending=[True, False]).reset_index(drop=True)
             
-            # --- 方案 A 精髓：抹平副店铺的重复库存，保证 SUM 求和精确 ---
             is_duplicate = merged.duplicated(subset=['MSKU'], keep='first')
             cols_to_clear = ['可用量', '待发货', '7天内送达', '14天内送达', '21天内送达', '28天内送达', '28天以上送达', 
                              '待到合计', '总供给', '建议补货量', '0~30库龄', '31~60库龄', '61~90库龄', 
@@ -496,9 +488,6 @@ if run_btn:
 
             merged = merged[cols]
 
-            # =========================================================
-            # ⬇️ 完美护盾版 Excel 强行渲染引擎 (排版全复刻)
-            # =========================================================
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 merged.to_excel(writer, index=False, sheet_name='补货数据')
@@ -680,7 +669,9 @@ if "df_vis" in st.session_state:
     df_vis = df_vis.loc[:, ~df_vis.columns.duplicated()].copy()
     
     st.markdown("---")
-    col_t1, col_t2 = st.columns([1, 2])
+    
+    # 🌟 核心优化：排版升级为三列，加入 SKU 级联筛选器
+    col_t1, col_t2, col_t3 = st.columns([1, 1.5, 1.5])
     with col_t1:
         st.markdown("##### ⏱️ 分析时间窗口")
         time_window = st.radio("选择数据周期：", ["7天数据表现", "14天数据表现"], horizontal=True, label_visibility="collapsed")
@@ -688,15 +679,31 @@ if "df_vis" in st.session_state:
     
     spu_col = find_col_fuzzy_priority(df_vis, ['SPU', '父ASIN'])
     with col_t2:
-        st.markdown("##### 🔍 链接 (SPU) 穿透筛选器")
+        st.markdown("##### 🔍 链接 (SPU) 筛选器")
         if spu_col:
             spu_list = sorted(df_vis[df_vis[spu_col].astype(str).str.strip() != ''][spu_col].dropna().unique().tolist())
-            selected_spus = st.multiselect("选择想要分析的 SPU (支持多选)：", options=spu_list, default=[], label_visibility="collapsed")
+            selected_spus = st.multiselect("选择 SPU (支持多选)：", options=spu_list, default=[], label_visibility="collapsed")
         else:
             selected_spus = []
-            st.warning("⚠️ 数据表中未找到 SPU 或 父ASIN 列，无法开启筛选功能。")
+            st.warning("⚠️ 数据表中未找到 SPU 或 父ASIN 列")
 
-    target_df = df_vis[df_vis[spu_col].isin(selected_spus)] if selected_spus and spu_col else df_vis
+    # 🌟 智能级联：如果选了 SPU，就只把该 SPU 下的 SKU 拿出来当做选项
+    temp_df = df_vis[df_vis[spu_col].isin(selected_spus)] if selected_spus and spu_col else df_vis
+    
+    with col_t3:
+        st.markdown("##### 🔍 子体 (SKU) 筛选器")
+        if 'MSKU' in temp_df.columns:
+            sku_list = sorted(temp_df[temp_df['MSKU'].astype(str).str.strip() != '']['MSKU'].dropna().unique().tolist())
+            selected_skus = st.multiselect("选择 SKU (支持多选)：", options=sku_list, default=[], label_visibility="collapsed")
+        else:
+            selected_skus = []
+            st.warning("⚠️ 数据表中未找到 MSKU 列")
+
+    # 🌟 最终联动数据：根据 SKU 筛选结果截取大盘数据
+    target_df = temp_df[temp_df['MSKU'].isin(selected_skus)] if selected_skus else temp_df
+    
+    # 判断是否开启了任何筛选动作
+    is_filtered = bool(selected_spus or selected_skus)
     
     def safe_sum(df_source, col_name):
         if col_name in df_source.columns:
@@ -723,7 +730,7 @@ if "df_vis" in st.session_state:
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
     def display_metric(col, label, val_str, global_val_str=None, ratio=None):
-        if selected_spus:
+        if is_filtered:
             if ratio is not None: col.metric(label, val_str, f"占大盘 {ratio:.1%}", delta_color="off")
             else: col.metric(label, val_str, f"大盘均值 {global_val_str}", delta_color="off")
         else:
@@ -750,8 +757,8 @@ if "df_vis" in st.session_state:
             
             def _safe_div(a, b): return float(a) / float(b) if float(b) > 0 else 0.0
 
-            if selected_spus:
-                st.markdown("##### 📝 已筛选 SPU 下的子 SKU 明细表 (微观视角)")
+            if is_filtered:
+                st.markdown("##### 📝 已筛选 SPU/SKU 的明细表 (微观视角)")
                 sku_df = target_df.copy()
                 show_cols = ['MSKU', spu_col, f'{prefix}销售额', '订单毛利润', '订单毛利率', '广告花费', '广告销售额', 'ACOS', 'ACoAS', 'CPC', '广告CVR', 'CTR', f'{prefix}销售转化率', f'{prefix}日均订单', '可用量', '待到合计', '预计可售天数', '建议补货量']
                 show_cols = [c for c in show_cols if c in sku_df.columns]
@@ -843,7 +850,7 @@ if "df_vis" in st.session_state:
         st.markdown("### 🚨 风险明细面板")
         col_chart1, col_chart2 = st.columns(2)
         with col_chart1:
-            st.markdown(f"#### 🚨 紧急断货预警 TOP 15 {'(当前SPU)' if selected_spus else '(全盘)'}")
+            st.markdown(f"#### 🚨 紧急断货预警 TOP 15 {'(当前筛选)' if is_filtered else '(全盘)'}")
             if '预计可售天数' in target_df.columns:
                 risk_df = target_df[(pd.to_numeric(target_df['预计可售天数'], errors='coerce') < ALERT_STOCKOUT_DAYS) & 
                                  (pd.to_numeric(target_df['预测日销量'], errors='coerce') > 0.1)]
@@ -877,9 +884,9 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V27·SOP级终极数据大盘.xlsx】",
+        label="📥 下载完整【V28·级联筛选终极版.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V27_SOP标准大盘表_{timestamp_str}.xlsx",
+        file_name=f"V28_精准穿透分析大盘_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
