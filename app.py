@@ -235,17 +235,18 @@ with st.sidebar:
     <i>示例：7天流量_美区店铺.xlsx</i>
     </div>
     """, unsafe_allow_html=True)
-    st.write("") # 留点空隙
+    st.write("") 
 
     st.header("📁 2. 全选一键拖拽区")
     st.caption("无需分类，直接将所有表格拖入下方虚线框内：")
     all_uploaded_files = st.file_uploader("将所有 Excel/CSV 拖拽至此", accept_multiple_files=True, label_visibility="collapsed")
 
     st.header("⚙️ 3. 运营参数调整")
-    TARGET_DAYS_TRANSIT = st.number_input("在途目标天数", value=50)
+    # ✅ 核心更新：根据业务需求调整默认天数
+    TARGET_DAYS_TRANSIT = st.number_input("在途目标天数", value=60)
     TARGET_DAYS_STOCK = st.number_input("库存目标天数", value=30)
     TARGET_DAYS_TOTAL = TARGET_DAYS_TRANSIT + TARGET_DAYS_STOCK
-    ALERT_STOCKOUT_DAYS = st.number_input("断货红线天数 (预警)", value=20)
+    ALERT_STOCKOUT_DAYS = st.number_input("断货红线天数 (预警)", value=15)
     
     run_btn = st.button("🚀 开始极速分析大盘", type="primary", use_container_width=True)
 
@@ -876,9 +877,9 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V26·SOP级终极数据大盘.xlsx】",
+        label="📥 下载完整【V27·SOP级终极数据大盘.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V26_SOP标准大盘表_{timestamp_str}.xlsx",
+        file_name=f"V27_SOP标准大盘表_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
