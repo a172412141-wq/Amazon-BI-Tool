@@ -3,16 +3,16 @@ import pandas as pd
 import numpy as np
 import io
 import re
+import os
 from datetime import datetime
 import plotly.express as px
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ================= 1. 网页全局配置与密码锁 =================
 st.set_page_config(page_title="智能补货与数据中台", page_icon="📦", layout="wide")
 
-# --- 🔒 团队安全密码锁 ---
-TEAM_PASSWORD = "YOETEY2026"  # 你可以在这里修改你们团队的专属密码
+TEAM_PASSWORD = "YOETEY2026"
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -26,7 +26,7 @@ if not st.session_state.authenticated:
             st.rerun()
         else:
             st.error("❌ 密码错误，请联系管理员获取最新密码。")
-    st.stop()  # 密码不对，代码就停在这里，绝不展示后台任何逻辑
+    st.stop()
 
 # ================= 下面是核心系统代码 =================
 st.markdown("""
@@ -38,10 +38,21 @@ st.markdown("""
     div[data-testid="stMetricLabel"] { font-size: 0.85rem !important; margin-bottom: -5px; }
     div[data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
     hr { margin-top: 0.5em; margin-bottom: 0.5em; }
+    .sop-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ffc107; font-size: 0.9em; color: #333;}
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🚀 亚马逊智能补货与分析中台")
+
+def deduplicate_uploaded_files(files):
+    if not files: return []
+    seen_names = set()
+    unique_files = []
+    for f in files:
+        if f.name not in seen_names:
+            seen_names.add(f.name)
+            unique_files.append(f)
+    return unique_files
 
 @st.cache_data
 def clean_msku_strict(val):
@@ -92,6 +103,8 @@ def process_traffic_data(files, prefix):
         try:
             df = read_uploaded_file(f)
             df = clean_columns(df)
+            df = df.drop_duplicates()
+            
             sku_col = find_col_fuzzy_priority(df, ['SKU', '(Child)', '子ASIN'])
             if not sku_col: continue
             df['join_key'] = df[sku_col].apply(clean_msku_strict)
@@ -132,6 +145,8 @@ def process_inventory_data(files):
         try:
             df = read_uploaded_file(f)
             df = clean_columns(df)
+            df = df.drop_duplicates()
+            
             col_sku = find_col_fuzzy_priority(df, ['SKU', 'sku', '产品'])
             col_qty = find_col_fuzzy_priority(df, ['海外仓在途', '在途', '发货量', '数量', 'Qty', 'quantity', '件数'])
             col_date = find_col_fuzzy_priority(df, ['实际-预计到货时间', '预计到货', 'XT-预计到货', '实际', '预计', '到货', '时间', '日期', 'ETA'])
@@ -166,6 +181,8 @@ def process_age_data(files):
         try:
             df = read_uploaded_file(f)
             df = clean_columns(df)
+            df = df.drop_duplicates()
+            
             col_sku = find_col_fuzzy_priority(df, ['SKU', 'sku', '产品'])
             if not col_sku: continue
             
@@ -203,36 +220,78 @@ def process_age_data(files):
     if not all_dfs: return None
     return pd.concat(all_dfs, ignore_index=True).groupby('join_key').sum().reset_index()
 
-
-# ================= 3. 网页侧边栏：多文件拖拽上传区 =================
+# ================= 3. 网页侧边栏：SOP看板 & 上传区 =================
 with st.sidebar:
-    st.header("📁 1. 团队各自上传数据源")
-    st.caption("支持多选拖拽上传。数据绝对安全，阅后即焚。")
-    files_product = st.file_uploader("产品表现表 & 重要MSKU", accept_multiple_files=True)
-    files_7d = st.file_uploader("7天流量表", accept_multiple_files=True)
-    files_14d = st.file_uploader("14天流量表", accept_multiple_files=True)
-    files_inv = st.file_uploader("海外仓库存表", accept_multiple_files=True)
-    files_age = st.file_uploader("库龄表", accept_multiple_files=True)
+    st.header("📋 1. SOP 文件命名规范")
+    st.markdown("""
+    <div class="sop-box">
+    <b>⚠️ 警告：系统将严格核对文件名前缀，不规范文件将被直接拒收。</b><br><br>
+    请务必在上传前，将导出的文件名改为以下标准前缀：<br>
+    ✅ <code>产品表现_</code> 或 <code>白名单_</code><br>
+    ✅ <code>7天流量_</code><br>
+    ✅ <code>14天流量_</code><br>
+    ✅ <code>库存_</code> 或 <code>海外仓_</code><br>
+    ✅ <code>库龄_</code><br>
+    <i>示例：7天流量_美区店铺.xlsx</i>
+    </div>
+    """, unsafe_allow_html=True)
+    st.write("") # 留点空隙
 
-    st.header("⚙️ 2. 运营参数调整")
+    st.header("📁 2. 全选一键拖拽区")
+    st.caption("无需分类，直接将所有表格拖入下方虚线框内：")
+    all_uploaded_files = st.file_uploader("将所有 Excel/CSV 拖拽至此", accept_multiple_files=True, label_visibility="collapsed")
+
+    st.header("⚙️ 3. 运营参数调整")
     TARGET_DAYS_TRANSIT = st.number_input("在途目标天数", value=50)
     TARGET_DAYS_STOCK = st.number_input("库存目标天数", value=30)
     TARGET_DAYS_TOTAL = TARGET_DAYS_TRANSIT + TARGET_DAYS_STOCK
     ALERT_STOCKOUT_DAYS = st.number_input("断货红线天数 (预警)", value=20)
     
-    run_btn = st.button("🚀 开始分析并生成表", type="primary", use_container_width=True)
+    run_btn = st.button("🚀 开始极速分析大盘", type="primary", use_container_width=True)
 
-# ================= 4. 核心运算区 =================
+# ================= 4. 核心运算与终极Excel排版区 =================
 if run_btn:
-    if not files_product:
-        st.error("❌ 请至少上传一份【产品表现表】！")
+    if not all_uploaded_files:
+        st.error("❌ 请先上传数据表格！")
     else:
-        with st.spinner("🧠 云端服务器正在高速清洗与聚合运算，请稍候..."):
+        # --- 🛡️ 严谨级分发引擎：强制基于 SOP 命名规范路由 ---
+        unique_files = deduplicate_uploaded_files(all_uploaded_files)
+        files_product, files_7d, files_14d, files_inv, files_age = [], [], [], [], []
+        unrecognized_files = []
+        
+        for f in unique_files:
+            fname = f.name.lower()
+            if "7天流量" in fname or "traffic_7d" in fname: files_7d.append(f)
+            elif "14天流量" in fname or "traffic_14d" in fname: files_14d.append(f)
+            elif "库龄" in fname or "age" in fname: files_age.append(f)
+            elif "海外仓" in fname or "库存" in fname or "inventory" in fname: files_inv.append(f)
+            elif "产品表现" in fname or "白名单" in fname or "重要" in fname or "product" in fname: files_product.append(f)
+            else: unrecognized_files.append(f.name)
+        
+        if unrecognized_files:
+            st.warning(f"⚠️ 发现未按 SOP 规范命名的文件，系统已自动拒收并忽略：\n {', '.join(unrecognized_files)}")
+
+        st.success("✅ 合规文件已成功读取并分类：")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("产品表现表", f"{len(files_product)} 份")
+        c2.metric("7天流量表", f"{len(files_7d)} 份")
+        c3.metric("14天流量表", f"{len(files_14d)} 份")
+        c4.metric("库存表", f"{len(files_inv)} 份")
+        c5.metric("库龄表", f"{len(files_age)} 份")
+        st.markdown("---")
+
+        if not files_product:
+            st.error("❌ 严重错误：未能识别到合规的【产品表现表】！请确保文件名包含“产品表现”或“白名单”字样。")
+            st.stop()
+
+        with st.spinner("🧠 正在执行方案A(主次店铺智能分配)进行精准运算，请稍候..."):
             df_whitelist = None
             all_data_dfs = []
             for f in files_product:
                 df = read_uploaded_file(f)
                 df = clean_columns(df)
+                df = df.drop_duplicates()
+                
                 if "重要" in f.name or "白名单" in f.name:
                     col_imp_msku = find_col_fuzzy_priority(df, ['MSKU', '商家SKU', 'sku'])
                     if col_imp_msku:
@@ -240,14 +299,16 @@ if run_btn:
                         col_shop = find_col_fuzzy_priority(df, ['店铺', 'Shop', 'Store'])
                         if col_shop:
                             df['店铺'] = df[col_shop].astype(str).str.strip()
-                            df_whitelist = df[['MSKU', '店铺']]
+                            df_whitelist = df[['MSKU', '店铺']].drop_duplicates()
                         else:
-                            df_whitelist = df[['MSKU']]
+                            df_whitelist = df[['MSKU']].drop_duplicates()
                     continue
+                
                 col_msku = find_col_fuzzy_priority(df, ['MSKU', '商家SKU'])
                 col_sku = find_col_exact(df, 'SKU') 
                 if not col_sku: col_sku = find_col_fuzzy_priority(df, ['FNSKU'])
                 if not col_sku: col_sku = col_msku
+                
                 if col_msku:
                     df['MSKU'] = df[col_msku].apply(clean_msku_strict)
                     if col_sku: df['SKU_KEY'] = df[col_sku].apply(clean_msku_strict)
@@ -258,6 +319,7 @@ if run_btn:
             
             if not all_data_dfs: st.error("❌ 无法在产品表现表中找到 MSKU 列！"); st.stop()
             df_master = pd.concat(all_data_dfs, ignore_index=True)
+            df_master = df_master.drop_duplicates()
             
             if df_whitelist is not None:
                 has_shop_whitelist = '店铺' in df_whitelist.columns
@@ -308,8 +370,11 @@ if run_btn:
             merged = df_master.copy()
             merged = merge_traffic_with_shop_validation(merged, df_7)
             merged = merge_traffic_with_shop_validation(merged, df_14)
-
             merged = merged.loc[:, ~merged.columns.duplicated()]
+
+            # ---------------------------------------------------------
+            # ⬇️ 方案 A 核心：挂载总库存
+            # ---------------------------------------------------------
             if df_inventory is not None and not df_inventory.empty:
                 df_inventory = df_inventory.loc[:, ~df_inventory.columns.duplicated()]
                 merged = pd.merge(merged, df_inventory, left_on='SKU_KEY', right_on='join_key', how='left')
@@ -372,11 +437,32 @@ if run_btn:
             valid_inv = [c for c in inv_cols if c in merged.columns]
             merged['待到合计'] = merged[valid_inv].sum(axis=1)
 
+            # --- 计算 SKU 维度的总需求 ---
             merged['预测日销量'] = (merged['7天日均订单'] + merged['14天日均订单']) / 2
-            merged['理论需求量'] = merged['预测日销量'] * TARGET_DAYS_TOTAL
+            sku_agg = merged.groupby('MSKU').agg({'预测日销量': 'sum'}).rename(columns={'预测日销量': 'SKU_总日均'})
+            merged = pd.merge(merged, sku_agg, on='MSKU', how='left')
+            
+            merged['理论需求量'] = merged['SKU_总日均'] * TARGET_DAYS_TOTAL
             merged['总供给'] = merged['可用量'] + merged['待到合计']
             merged['建议补货量'] = merged.apply(lambda x: max(0, x['理论需求量'] - x['总供给']), axis=1)
-            merged['预计可售天数'] = merged.apply(lambda x: x['总供给'] / x['预测日销量'] if x['预测日销量'] > 0.1 else 999, axis=1)
+            merged['预计可售天数'] = merged.apply(lambda x: x['总供给'] / x['SKU_总日均'] if x['SKU_总日均'] > 0.1 else 999, axis=1)
+
+            # --- 方案 A 精髓：把 SKU 按销量倒序排，让“主店铺”排在第一行 ---
+            merged = merged.sort_values(by=['MSKU', '7天销售额'], ascending=[True, False]).reset_index(drop=True)
+            
+            # --- 方案 A 精髓：抹平副店铺的重复库存，保证 SUM 求和精确 ---
+            is_duplicate = merged.duplicated(subset=['MSKU'], keep='first')
+            cols_to_clear = ['可用量', '待发货', '7天内送达', '14天内送达', '21天内送达', '28天内送达', '28天以上送达', 
+                             '待到合计', '总供给', '建议补货量', '0~30库龄', '31~60库龄', '61~90库龄', 
+                             '91~180库龄', '181~270库龄', '271~330库龄', '331~365库龄', '365以上库龄', '181以上库龄']
+            valid_cols_clear = [c for c in cols_to_clear if c in merged.columns]
+            
+            for col in valid_cols_clear:
+                merged.loc[is_duplicate, col] = 0
+            merged.loc[is_duplicate, '预计可售天数'] = None
+
+            merged['理论需求量'] = merged['预测日销量'] * TARGET_DAYS_TOTAL
+            merged.drop(columns=['SKU_总日均'], inplace=True)
 
             cols_to_move_front = ['预测日销量', '建议补货量', '预计可售天数', '理论需求量', '总供给']
             cols_to_move_front = [c for c in cols_to_move_front if c in merged.columns]
@@ -409,25 +495,34 @@ if run_btn:
 
             merged = merged[cols]
 
+            # =========================================================
+            # ⬇️ 完美护盾版 Excel 强行渲染引擎 (排版全复刻)
+            # =========================================================
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 merged.to_excel(writer, index=False, sheet_name='补货数据')
                 ws = writer.sheets['补货数据']
-                ws.column_dimensions['A'].width = 15
-                ws.column_dimensions['B'].width = 25
+                
                 ws.insert_rows(1, amount=2)
                 ws.freeze_panes = 'J4'
                 ws['A1'] = "总计求和"
                 ws['A2'] = "筛选求和"
-                
-                max_r = ws.max_row
-                exclude_sum = ['店铺', 'MSKU', 'ASIN', 'SKU', '图片', 'image', '转化率', '可售天数', '商品属性', '分类', '型号']
-                must_sum = ['销量', '销售额', '数量', '会话', '浏览', '送达', '待到', '可用', '库龄', '补货', '供给', '需求', '利润', '广告', '花费', '订单', '待发货', '点击', '曝光']
-                
+
+                font_global = Font(name='Arial', size=11)
+                font_header = Font(name='Arial', size=11, bold=True)
+                align_body = Alignment(vertical='center')
+                align_header = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                border_all = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
                 color_red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")     
                 color_yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  
                 color_blue = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")    
                 color_green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")   
+
+                idx_to_name = {}
+                for cell in ws[3]:
+                    if cell.value:
+                        idx_to_name[cell.col_idx] = str(cell.value).strip()
 
                 list_header_yellow = ['店铺', '商品属性', 'ASIN', 'SKU', '父ASIN', 'SPU', '一级分类', '二级分类', '三级分类', '型号']
                 list_full_blue = ['订单毛利润', '订单毛利率']
@@ -436,47 +531,138 @@ if run_btn:
                                      '14天会话数', '14天页面浏览量', '14天订单商品总数', '14天日均订单', '14天销售额', '14天销售转化率']
                 list_full_yellow = ['待到合计', '可用量', '待发货']
 
-                col_map = {}
-                for col_idx in range(1, ws.max_column + 1):
-                    header_name = str(ws.cell(row=3, column=col_idx).value).strip()
-                    col_map[header_name] = get_column_letter(col_idx)
+                max_row = ws.max_row
+                max_col = ws.max_column
 
-                for col_idx in range(1, ws.max_column + 1):
+                idx_stock_days = None
+                for k, v in idx_to_name.items():
+                    if v == '预计可售天数':
+                        idx_stock_days = k
+                        break
+
+                for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+                    is_stockout_risk = False
+                    if row[0].row >= 4 and idx_stock_days and idx_stock_days <= len(row):
+                        val_days = row[idx_stock_days - 1].value
+                        if isinstance(val_days, (int, float)) and val_days < ALERT_STOCKOUT_DAYS:
+                            is_stockout_risk = True
+
+                    for cell in row:
+                        r = cell.row
+                        c = cell.col_idx
+                        val = cell.value
+                        col_name = idx_to_name.get(c, "")
+
+                        if r <= 3:
+                            cell.font = font_header
+                            if r == 3: cell.alignment = align_header
+                            else: cell.alignment = align_body
+                        else:
+                            cell.font = font_global
+                            cell.alignment = align_body
+                        
+                        if val is not None or r == 3 or c <= 9: 
+                            cell.border = border_all
+
+                        if isinstance(val, (int, float)):
+                            if any(x in col_name for x in ["率", "CTR", "ACOS", "ACoAS", "CVR", "占比"]):
+                                cell.number_format = '0.00%'
+                            elif any(x in col_name for x in ["送达", "待到", "可用", "库龄", "补货", "供给", "需求", "发货", "点击", "曝光", "展示", "数量", "会话", "浏览"]):
+                                cell.number_format = '#,##0'
+                            elif "天数" in col_name:
+                                cell.number_format = '0.0'
+                            else:
+                                cell.number_format = '#,##0.00'
+
+                        if r == 3: 
+                            if col_name in list_header_yellow or col_name in list_full_yellow: cell.fill = color_yellow
+                            elif col_name in list_full_blue: cell.fill = color_blue
+                            elif col_name in list_header_green or any(x in col_name for x in ['点击', '曝光', '展示']): cell.fill = color_green
+                        
+                        elif r >= 4: 
+                            if col_name in list_full_blue: cell.fill = color_blue
+                            elif col_name in list_full_yellow: cell.fill = color_yellow
+                            
+                            if is_stockout_risk and col_name in ['MSKU', 'ASIN', '可用量', '建议补货量', '预计可售天数']:
+                                if isinstance(val, (int, float)) and val > 0: cell.fill = color_red
+                                elif isinstance(val, str): cell.fill = color_red
+                            
+                            if isinstance(val, (int, float)) and val > 0:
+                                if any(x in col_name for x in ['91~180库龄', '181~270库龄', '271~330库龄', '331~365库龄', '365以上库龄', '181以上库龄']):
+                                    cell.fill = color_red
+                                elif col_name == '61~90库龄':
+                                    cell.fill = color_yellow
+
+                ws.row_dimensions[3].height = 40
+                
+                for col_idx in range(1, max_col + 1):
                     col_letter = get_column_letter(col_idx)
-                    header_cell = ws.cell(row=3, column=col_idx)
-                    header_name = str(header_cell.value)
+                    max_len = 0
+                    for row_idx in range(3, min(max_row, 300) + 1):
+                        cell_val = ws.cell(row=row_idx, column=col_idx).value
+                        if cell_val is not None:
+                            val_str = str(cell_val)
+                            length = sum(2.0 if '\u4e00' <= char <= '\u9fa5' else 1.1 for char in val_str)
+                            if length > max_len: max_len = length
+                    
+                    adjusted_width = max_len + 3 
+                    if adjusted_width < 10: adjusted_width = 10
+                    if adjusted_width > 35: adjusted_width = 35 
+                    
+                    if col_idx == 1: adjusted_width = 15 
+                    elif col_idx == 2: adjusted_width = 25 
+                    
+                    ws.column_dimensions[col_letter].width = adjusted_width
+
+                col_map_rev = {idx_to_name[k]: get_column_letter(k) for k in idx_to_name}
+                exclude_sum = ['店铺', 'MSKU', 'ASIN', 'SKU', '图片', 'image', '转化率', '可售天数', '商品属性', '分类', '型号']
+                must_sum = ['销量', '销售额', '数量', '会话', '浏览', '送达', '待到', '可用', '库龄', '补货', '供给', '需求', '利润', '广告', '花费', '订单', '待发货', '点击', '曝光']
+
+                for col_idx in range(1, max_col + 1):
+                    col_letter = get_column_letter(col_idx)
+                    col_name = idx_to_name.get(col_idx, "")
                     
                     is_summable = False
-                    if any(ex in header_name for ex in exclude_sum): is_summable = False
-                    elif any(k in header_name for k in must_sum): is_summable = True
+                    if any(ex in col_name for ex in exclude_sum): is_summable = False
+                    elif any(k in col_name for k in must_sum): is_summable = True
                     
-                    if col_idx >= 9 and is_summable:
-                        range_str = f"{col_letter}4:{col_letter}{max_r}"
+                    if col_idx >= 5 and is_summable:
+                        range_str = f"{col_letter}4:{col_letter}{max_row}"
                         ws[f'{col_letter}1'] = f"=SUM({range_str})"
                         ws[f'{col_letter}2'] = f"=SUBTOTAL(109, {range_str})"
-                        for r in [1, 2]:
-                            cell = ws[f'{col_letter}{r}']
-                            if any(x in header_name for x in ['销售额', '利润', '广告', '花费', '订单', 'CPC']): cell.number_format = '#,##0.00'
-                            elif any(x in header_name for x in ["送达", "待到", "可用", "库龄", "补货", "供给", "需求", "数量", "待发货", "点击", "曝光"]): cell.number_format = '#,##0'
-                            else: cell.number_format = '#,##0.00'
+                        ws[f'{col_letter}1'].font = font_header
+                        ws[f'{col_letter}2'].font = font_header
+                        ws[f'{col_letter}1'].border = border_all
+                        ws[f'{col_letter}2'].border = border_all
+                        
+                        fmt = '#,##0.00'
+                        if any(x in col_name for x in ["送达", "待到", "可用", "库龄", "补货", "供给", "需求", "数量", "待发货", "点击", "曝光", "展示", "会话", "浏览"]):
+                            fmt = '#,##0'
+                        ws[f'{col_letter}1'].number_format = fmt
+                        ws[f'{col_letter}2'].number_format = fmt
 
                 def write_weighted_formula(name_keyword, numerator_col, denominator_col, fmt='0.00%'):
-                    if name_keyword in header_name.upper():
-                        c_num = col_map.get(numerator_col)
-                        c_denom = col_map.get(denominator_col)
-                        if not c_num or not c_denom:
-                            for k, v in col_map.items():
-                                if numerator_col in k: c_num = v
-                                if denominator_col in k: c_denom = v
-                        if c_num and c_denom:
-                            ws[f'{col_letter}1'] = f"=IFERROR(SUM({c_num}4:{c_num}{max_r})/SUM({c_denom}4:{c_denom}{max_r}),0)"
-                            ws[f'{col_letter}2'] = f"=IFERROR(SUBTOTAL(109,{c_num}4:{c_num}{max_r})/SUBTOTAL(109,{c_denom}4:{c_denom}{max_r}),0)"
-                            ws[f'{col_letter}1'].number_format = fmt
-                            ws[f'{col_letter}2'].number_format = fmt
+                    for col_idx, col_name in idx_to_name.items():
+                        if name_keyword.upper() in col_name.upper():
+                            c_num = col_map_rev.get(numerator_col)
+                            c_denom = col_map_rev.get(denominator_col)
+                            if not c_num or not c_denom:
+                                for k, v in col_map_rev.items():
+                                    if numerator_col in k: c_num = v
+                                    if denominator_col in k: c_denom = v
+                            if c_num and c_denom:
+                                col_letter = get_column_letter(col_idx)
+                                ws[f'{col_letter}1'] = f"=IFERROR(SUM({c_num}4:{c_num}{max_row})/SUM({c_denom}4:{c_denom}{max_row}),0)"
+                                ws[f'{col_letter}2'] = f"=IFERROR(SUBTOTAL(109,{c_num}4:{c_num}{max_row})/SUBTOTAL(109,{c_denom}4:{c_denom}{max_row}),0)"
+                                ws[f'{col_letter}1'].number_format = fmt
+                                ws[f'{col_letter}2'].number_format = fmt
+                                ws[f'{col_letter}1'].font = font_header
+                                ws[f'{col_letter}2'].font = font_header
+                                ws[f'{col_letter}1'].border = border_all
+                                ws[f'{col_letter}2'].border = border_all
 
                 write_weighted_formula('订单毛利率', '订单毛利润', '7天销售额')
                 write_weighted_formula('ACoAS', '广告花费', '7天销售额', fmt='0.00%')
-                write_weighted_formula('ACOAS', '广告花费', '7天销售额', fmt='0.00%')
                 write_weighted_formula('ACOS', '广告花费', '广告销售额')
                 write_weighted_formula('CPC', '广告花费', '广告点击数', fmt='#,##0.00')
                 write_weighted_formula('广告CVR', '广告订单', '广告点击数')
@@ -484,72 +670,9 @@ if run_btn:
                 write_weighted_formula('14天销售转化率', '14天订单商品总数', '14天会话数')
                 write_weighted_formula('CTR', '广告点击数', '广告曝光量')
 
-                if header_name in list_header_yellow: header_cell.fill = color_yellow
-                elif header_name in list_full_blue:   header_cell.fill = color_blue
-                elif header_name in list_header_green:header_cell.fill = color_green
-                elif header_name in list_full_yellow: header_cell.fill = color_yellow
-                elif '点击' in header_name or '曝光' in header_name or '展示' in header_name: header_cell.fill = color_green
-
-            header_style = Font(name='等线', size=11, bold=True)
-            header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            ws.row_dimensions[3].height = 150
-            for cell in ws[3]:
-                cell.font = header_style
-                cell.alignment = header_align
-
-            body_font = Font(name='等线', size=11)
-            body_align = Alignment(vertical='center')
-            
-            start_fmt_col = 9
-            age_cols_yellow = ['61~90库龄']
-            age_cols_red = ['91~180库龄', '181~270库龄', '271~330库龄', '331~365库龄', '365以上库龄', '181以上库龄']
-            
-            idx_to_name = {cell.col_idx: cell.value for cell in ws[3]}
-            idx_stock_days = col_map.get('预计可售天数')
-
-            for row in ws.iter_rows(min_row=4):
-                is_stockout_risk = False
-                if idx_stock_days:
-                    from openpyxl.utils import column_index_from_string
-                    col_idx_num = column_index_from_string(idx_stock_days)
-                    val_days = row[col_idx_num-1].value 
-                    if isinstance(val_days, (int, float)) and val_days < ALERT_STOCKOUT_DAYS:
-                        is_stockout_risk = True
-
-                for cell in row:
-                    cell.font = body_font
-                    cell.alignment = body_align
-                    col_name = str(idx_to_name.get(cell.col_idx, ""))
-                    val = cell.value
-
-                    if cell.col_idx >= start_fmt_col:
-                        if "转化率" in col_name or "率" in col_name or "CTR" in col_name or "ACOS" in col_name or "ACoAS" in col_name or "CVR" in col_name: 
-                            cell.number_format = '0.00%'
-                        elif any(x in col_name for x in ["送达", "待到合计", "可用量", "库龄", "建议补货", "总供给", "需求", "待发货", "点击", "曝光"]): 
-                            cell.number_format = '#,##0'
-                        else: 
-                            cell.number_format = '#,##0.00'
-
-                    if col_name in list_full_blue:   cell.fill = color_blue
-                    elif col_name in list_full_yellow: cell.fill = color_yellow
-
-                    if is_stockout_risk:
-                        if col_name in ['MSKU', 'ASIN']: cell.fill = color_red
-                        elif col_name in ['建议补货量', '预计可售天数', '可用量']:
-                            if isinstance(val, (int, float)) and val > 0: cell.fill = color_red
-
-                    if isinstance(val, (int, float)) and val > 0:
-                        if any(k in col_name for k in age_cols_red): cell.fill = color_red
-                        elif any(k in col_name for k in age_cols_yellow): cell.fill = color_yellow
-
-            ws['A1'].font = Font(name='等线', size=11, bold=True)
-            ws['A2'].font = Font(name='等线', size=11, bold=True)
-            for row in ws.iter_rows(min_row=1, max_row=2, min_col=9):
-                for cell in row: cell.font = Font(name='等线', size=11, bold=True)
-
         st.session_state.processed_excel = output.getvalue()
         st.session_state.df_vis = merged
-        
+
 # ================= 5. 📊 交互式数据大屏展示 =================
 if "df_vis" in st.session_state:
     df_vis = st.session_state.df_vis
@@ -621,7 +744,7 @@ if "df_vis" in st.session_state:
             format_dict = {
                 f'{prefix}销售额': '${:,.2f}', '订单毛利润': '${:,.2f}', '广告花费': '${:,.2f}', '广告销售额': '${:,.2f}', 'CPC': '${:,.2f}',
                 '订单毛利率': '{:.2%}', 'ACOS': '{:.2%}', 'ACoAS': '{:.2%}', '广告CVR': '{:.2%}', 'CTR': '{:.2%}', f'{prefix}销售转化率': '{:.2%}',
-                '可用量': '{:,.0f}', '待到合计': '{:,.0f}', '建议补货量': '{:,.0f}', f'{prefix}日均订单': '{:,.2f}', '预计可售天数': '{:,.1f}', '可售天数': '{:,.1f}'
+                '可用量': '{:,.0f}', '待到合计': '{:,.0f}', '建议补货量': '{:,.0f}', f'{prefix}日均订单': '{:,.2f}', '预计可售天数': '{:,.1f}'
             }
             
             def _safe_div(a, b): return float(a) / float(b) if float(b) > 0 else 0.0
@@ -751,10 +874,11 @@ if "df_vis" in st.session_state:
                     st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
+    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【带公式的高级补货表.xlsx】",
+        label="📥 下载完整【V26·SOP级终极数据大盘.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"智能补货与分析表_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        file_name=f"V26_SOP标准大盘表_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
