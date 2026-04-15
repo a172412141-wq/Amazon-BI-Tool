@@ -48,7 +48,6 @@ def clean_columns(df):
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
-# 🌟 V38 核心修复 1: 狙击级列名匹配 (先精确，后模糊，避开雷区)
 def find_col(df, exacts, fuzzys=[]):
     for kw in exacts:
         for c in df.columns:
@@ -105,7 +104,6 @@ def process_inventory(files):
     for f in files:
         try:
             df = clean_columns(read_file(f).drop_duplicates())
-            # 🌟 V38 核心修复 2: 严格锁定库存列，防止被装箱数量污染
             c_sku = find_col(df, ['SKU'], ['产品'])
             c_qty = find_col(df, ['海外仓在途', '在途数量', '发货量', '数量', 'Qty', '可用数量'], ['在途'])
             c_date = find_col(df, ['预计到货时间', '预计到货', 'ETA', '到货时间', '日期'], ['到货', 'eta'])
@@ -234,16 +232,15 @@ if run_btn:
                     df_master = pd.merge(df_master, df_wl[['MSKU']].drop_duplicates(), on='MSKU', how='inner')
             if df_master.empty: st.error("❌ 白名单过滤后无数据！"); st.stop()
 
-            # 🌟 V38 核心修复 3: 精准强转数字字典，绝不抢占同名字段
             core_map = {
                 '7天销售额': (['7天销售额', '销售额(7天)'], ['7 days sales']),
                 '14天销售额': (['14天销售额', '销售额(14天)'], ['14 days sales']),
                 '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)'], ['7天销量']),
                 '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)'], ['14天销量']),
-                '广告花费': (['广告花费'], ['ad spend', 'spend (ad)']), # 去掉模糊的"花费"
+                '广告花费': (['广告花费'], ['ad spend', 'spend (ad)']), 
                 '广告销售额': (['广告销售额'], ['ad sales']),
                 '广告订单': (['广告订单量', '广告订单'], ['ad orders']),
-                '广告点击数': (['广告点击数', '广告点击'], ['ad clicks']), # 去掉模糊的"点击"
+                '广告点击数': (['广告点击数', '广告点击'], ['ad clicks']), 
                 '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光'], ['ad impressions']),
                 '订单毛利润': (['订单毛利润', '毛利润', '毛利额'], ['profit'])
             }
@@ -260,7 +257,6 @@ if run_btn:
                 if t_df is None or t_df.empty: return m_df
                 m_df, t_df = m_df.loc[:, ~m_df.columns.duplicated()], t_df.loc[:, ~t_df.columns.duplicated()]
                 t_cols = [c for c in t_df.columns if c not in ['join_key', 'traffic_shop']]
-                # 隔离保护：流量表不准覆盖 ERP 已经有的指标
                 overlap = [c for c in t_cols if c in m_df.columns]
                 if overlap:
                     t_df = t_df.drop(columns=overlap)
@@ -276,9 +272,10 @@ if run_btn:
                                 if col in temp.columns: temp.at[idx, col] = 0
                 return temp.drop(columns=['join_key', 'traffic_shop'], errors='ignore').groupby([c for c in m_df.columns if c not in t_cols], dropna=False)[t_cols].sum().reset_index()
 
-            # 多层合并，并确保保留方案 A：按独立店铺展示
+            # 🌟 V39 核心修复: 拆解链式操作，彻底杜绝 IndexError
             merged = merge_traffic(df_master.copy(), df_7)
-            merged = merge_traffic(merged, df_14).loc[:, ~merged.columns.duplicated()]
+            merged = merge_traffic(merged, df_14)
+            merged = merged.loc[:, ~merged.columns.duplicated()]
 
             # 贴入库存与库龄
             for df_t in [df_inventory, df_age]:
@@ -557,4 +554,4 @@ if "df_vis" in st.session_state:
                     st.plotly_chart(fg2, use_container_width=True)
 
     st.markdown("---")
-    st.download_button(label="📥 下载完整【V38·全息穿透修复版.xlsx】", data=st.session_state.processed_excel, file_name=f"V38_全息穿透大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    st.download_button(label="📥 下载完整【V39·修复防越界版.xlsx】", data=st.session_state.processed_excel, file_name=f"V39_极速安全大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
