@@ -8,7 +8,7 @@ import plotly.express as px
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ================= 1. 全局配置 (极速纯净版) =================
+# ================= 1. 全局配置 =================
 st.set_page_config(page_title="智能补货与数据中台", page_icon="📦", layout="wide")
 
 st.markdown("""
@@ -177,7 +177,7 @@ with st.sidebar:
     ALERT_STOCKOUT_DAYS = st.number_input("断货红线 (预警)", value=15)
     run_btn = st.button("🚀 开始全息穿透分析", type="primary", use_container_width=True)
 
-# ================= 4. 核心运算与排版 =================
+# ================= 4. 核心运算 =================
 if run_btn:
     if not all_files: st.error("❌ 请上传数据表格！")
     else:
@@ -273,8 +273,12 @@ if run_btn:
                                 if col in temp.columns: temp.at[idx, col] = 0
                 return temp.drop(columns=['join_key', 'traffic_shop'], errors='ignore').groupby([c for c in m_df.columns if c not in t_cols], dropna=False)[t_cols].sum().reset_index()
 
-            merged = merge_traffic(df_master.copy(), df_7)
-            merged = merge_traffic(merged, df_14).loc[:, ~merged.columns.duplicated()]
+            # 🌟 V41: 物理隔绝链式索引，安全挂载流量表
+            merged = df_master.copy()
+            merged = merge_traffic(merged, df_7)
+            merged = merged.loc[:, ~merged.columns.duplicated()].copy()
+            merged = merge_traffic(merged, df_14)
+            merged = merged.loc[:, ~merged.columns.duplicated()].copy()
 
             # 多店铺预聚合
             agg_d = {}
@@ -424,7 +428,6 @@ if "df_vis" in st.session_state:
     df_vis = st.session_state.df_vis.loc[:, ~st.session_state.df_vis.columns.duplicated()].copy()
     st.markdown("---")
     
-    # 🌟 BI 可视化大升级：全息逆向穿透控制台 (已修复旧函数引用)
     c_t1, c_t2, c_t3, c_t4, c_t5 = st.columns([0.8, 1, 1, 1, 1.2])
     with c_t1:
         st.markdown("##### ⏱️ 分析周期")
@@ -438,7 +441,7 @@ if "df_vis" in st.session_state:
         sel_s = st.multiselect("店", opt_s, label_visibility="collapsed")
         if sel_s: df_f = df_f[df_f['店铺'].apply(lambda x: any(s in str(x) for s in sel_s))]
 
-    spu_c = find_col(df_f, ['SPU', '父ASIN'], ['SPU', '父ASIN'])
+    spu_c = find_col(df_f, ['SPU', '父ASIN'])
     with c_t3:
         st.markdown("##### 🔗 SPU")
         opt_p = sorted(df_f[spu_c].dropna().unique().tolist()) if spu_c else []
@@ -562,4 +565,4 @@ if "df_vis" in st.session_state:
                     st.plotly_chart(fg2, use_container_width=True)
 
     st.markdown("---")
-    st.download_button(label="📥 下载完整【V40·全息穿透修复版.xlsx】", data=st.session_state.processed_excel, file_name=f"V40_全息极速大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    st.download_button(label="📥 下载完整【V41·彻底消除越界报错版.xlsx】", data=st.session_state.processed_excel, file_name=f"V41_全息极速大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
