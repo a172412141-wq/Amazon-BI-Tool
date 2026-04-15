@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -115,11 +116,12 @@ def process_traffic_cached(file_data_list, prefix):
             shop_col = find_col(df, ['店铺', 'Shop', 'Store', 'Account', '账号'], ['店铺', 'Shop', 'Store'])
             df['traffic_shop'] = df[shop_col].astype(str).str.strip() if shop_col else 'Unknown'
 
+            # 修复广告数据缺失：放宽排除词，不再排除含"广告"的列
             indicators = [
-                (["会话数", "Sessions"], ["会话", "session"], ["广告", "Ad", "占比"], "会话数"),
-                (["页面浏览量", "Views"], ["页面浏览", "view"], ["广告", "Ad", "占比"], "页面浏览量"),
-                (["订单商品总数", "Units Ordered"], ["订单商品"], ["广告", "Ad", "转化"], "订单商品总数"),
-                (["销售额", "Product Sales"], [], ["广告", "Ad"], "销售额")
+                (["会话数", "Sessions"], ["会话", "session"], ["占比", "转化"], "会话数"),
+                (["页面浏览量", "Views"], ["页面浏览", "view"], ["占比", "转化"], "页面浏览量"),
+                (["订单商品总数", "Units Ordered"], ["订单商品"], ["转化"], "订单商品总数"),
+                (["销售额", "Product Sales"], [], ["转化"], "销售额")
             ]
             found = {}
             for exacts, fuzzys, excls, suffix in indicators:
@@ -317,13 +319,33 @@ if run_btn:
                 st.error("❌ 白名单过滤后无数据！")
                 st.stop()
 
-           # 1. 调用缓存处理流量、库存、库龄
+            # 统一数值列
+            for std, (exacts, fuzzys) in {
+                '7天销售额': (['7天销售额', '销售额(7天)'], ['7 days sales']),
+                '14天销售额': (['14天销售额', '销售额(14天)'], ['14 days sales']),
+                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)'], ['7天销量']),
+                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)'], ['14天销量']),
+                '广告花费': (['广告花费'], ['ad spend', 'spend (ad)']),
+                '广告销售额': (['广告销售额'], ['ad sales']),
+                '广告订单': (['广告订单量', '广告订单'], ['ad orders']),
+                '广告点击数': (['广告点击数', '广告点击'], ['ad clicks']),
+                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光'], ['ad impressions']),
+                '订单毛利润': (['订单毛利润', '毛利润', '毛利额'], ['profit'])
+            }.items():
+                found = find_col(df_master, exacts, fuzzys)
+                if found and found != std:
+                    df_master.rename(columns={found: std}, inplace=True)
+                elif not found:
+                    df_master[std] = 0.0
+                df_master[std] = to_numeric_fast(df_master[std])
+
+            # 调用缓存处理流量、库存、库龄
             df_7 = process_traffic_cached(f_7d_data, "7天")
             df_14 = process_traffic_cached(f_14d_data, "14天")
             df_inventory = process_inventory_cached(f_inv_data)
             df_age = process_age_cached(f_age_data)
 
-            # 2. 向量化合并流量表
+            # 向量化合并流量表
             def merge_traffic_vectorized(m_df, t_df):
                 if t_df is None or t_df.empty:
                     return m_df
@@ -340,26 +362,6 @@ if run_btn:
             merged = df_master.copy()
             merged = merge_traffic_vectorized(merged, df_7)
             merged = merge_traffic_vectorized(merged, df_14)
-
-            # 3. 统一数值列（移到流量合并之后，并扩充广告词库）
-            for std, (exacts, fuzzys) in {
-                '7天销售额': (['7天销售额', '销售额(7天)', '7天销售'], ['7 days sales', '7-day sales']),
-                '14天销售额': (['14天销售额', '销售额(14天)', '14天销售'], ['14 days sales', '14-day sales']),
-                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)', '7天销量'], ['7天销量', '7 day orders']),
-                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)', '14天销量'], ['14天销量', '14 day orders']),
-                '广告花费': (['广告花费', 'Spend', '总花费', '花费'], ['ad spend', 'spend']),
-                '广告销售额': (['广告销售额', '7 Day Total Sales', '7天的总销售额', '7天总销售额', '广告销售'], ['ad sales', 'sales']),
-                '广告订单': (['广告订单量', '广告订单', '7 Day Total Orders (#)', '7天的总订单数', '7天总订单数', '广告销量'], ['ad orders', 'orders']),
-                '广告点击数': (['广告点击数', '广告点击', 'Clicks', '点击量'], ['ad clicks', 'clicks']),
-                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光', 'Impressions', '展示量'], ['ad impressions', 'impressions']),
-                '订单毛利润': (['订单毛利润', '毛利润', '毛利额'], ['profit'])
-            }.items():
-                found = find_col(merged, exacts, fuzzys)
-                if found and found != std:
-                    merged.rename(columns={found: std}, inplace=True)
-                elif not found:
-                    merged[std] = 0.0
-                merged[std] = to_numeric_fast(merged[std])
 
             # 聚合多店铺同一MSKU
             num_cols = merged.select_dtypes(include=np.number).columns.tolist()
@@ -387,7 +389,7 @@ if run_btn:
             merged_agg['待到合计'] = merged_agg[inv_c].sum(axis=1) if inv_c else 0
             merged_agg['总供给'] = merged_agg.get('可用量', 0) + merged_agg.get('待到合计', 0)
 
-            # 预测日销量与SKU层级需求（修复：SKU_总供给直接使用聚合后的总供给）
+            # 预测日销量与SKU层级需求
             merged_agg['预测日销量'] = (merged_agg['7天日均订单'] + merged_agg['14天日均订单']) / 2
             merged_agg['SKU_总日均'] = merged_agg.groupby('MSKU')['预测日销量'].transform('sum')
             merged_agg['SKU_总供给'] = merged_agg['总供给']  # 已按MSKU唯一
@@ -641,69 +643,56 @@ if "df_vis" in st.session_state:
             def _sd(n, d):
                 return s_sum(target_df, n) / s_sum(target_df, d) if s_sum(target_df, d) > 0 else 0
 
-            c_l, c_r = st.columns([2.5, 1])
-            with c_l:
-                st.markdown("##### 📝 链接明细概览表")
-                if is_filtered:
-                    s_cols = [c for c in ['MSKU', spu_c, 'ASIN', f'{prefix}销售额', '订单毛利润', '订单毛利率', '广告花费', '广告销售额',
-                                          'ACOS', 'ACoAS', 'CPC', '广告CVR', 'CTR', f'{prefix}销售转化率', f'{prefix}日均订单',
-                                          '可用量', '待到合计', '预计可售天数', '建议补货量'] if c in target_df.columns]
-                    t_row = pd.Series(index=s_cols, dtype=object)
-                    t_row['MSKU'] = '🌟 已选合计'
-                    for c in [spu_c, 'ASIN']:
-                        if c in s_cols:
-                            t_row[c] = '-'
-                    for c in [f'{prefix}销售额', '订单毛利润', '广告花费', '广告销售额', '可用量', '待到合计', '建议补货量', f'{prefix}日均订单']:
-                        if c in s_cols:
-                            t_row[c] = pd.to_numeric(target_df.get(c, 0), errors='coerce').sum()
-                    if '订单毛利率' in s_cols:
-                        t_row['订单毛利率'] = _sd('订单毛利润', f'{prefix}销售额')  # 修复：使用动态周期销售额
-                    if 'ACOS' in s_cols:
-                        t_row['ACOS'] = _sd('广告花费', '广告销售额')
-                    if 'ACoAS' in s_cols:
-                        t_row['ACoAS'] = _sd('广告花费', f'{prefix}销售额')
-                    if 'CPC' in s_cols:
-                        t_row['CPC'] = _sd('广告花费', '广告点击数')
-                    if '广告CVR' in s_cols:
-                        t_row['广告CVR'] = _sd('广告订单', '广告点击数')
-                    if 'CTR' in s_cols:
-                        t_row['CTR'] = _sd('广告点击数', '广告曝光量')
-                    if f'{prefix}销售转化率' in s_cols:
-                        t_row[f'{prefix}销售转化率'] = _sd(f'{prefix}订单商品总数', f'{prefix}会话数')
-                    if '预计可售天数' in s_cols:
-                        t_row['预计可售天数'] = _sd('总供给', '预测日销量')
-                    st.dataframe(pd.concat([t_row.to_frame().T, target_df[s_cols]], ignore_index=True).style.format(fmt_d), height=350, use_container_width=True)
-                else:
-                    sc = [f'{prefix}销售额', '订单毛利润', '可用量', '待到合计', '建议补货量', '广告花费', '广告销售额', '广告订单', '广告点击数', '广告曝光量',
-                          f'{prefix}订单商品总数', f'{prefix}会话数', f'{prefix}日均订单', '7天销售额', '总供给', '预测日销量']
-                    sc = list(set([c for c in sc if c in df_vis.columns]))
-                    for c in sc:
-                        df_vis[c] = pd.to_numeric(df_vis[c], errors='coerce').fillna(0)
-                    sp_df = df_vis.groupby(spu_c, dropna=False)[sc].sum().reset_index()
-                    sp_df = sp_df[sp_df[spu_c].astype(str).str.strip() != '']
+            st.markdown("##### 📝 链接明细概览表")
+            if is_filtered:
+                s_cols = [c for c in ['MSKU', spu_c, 'ASIN', f'{prefix}销售额', '订单毛利润', '订单毛利率', '广告花费', '广告销售额',
+                                      'ACOS', 'ACoAS', 'CPC', '广告CVR', 'CTR', f'{prefix}销售转化率', f'{prefix}日均订单',
+                                      '可用量', '待到合计', '预计可售天数', '建议补货量'] if c in target_df.columns]
+                t_row = pd.Series(index=s_cols, dtype=object)
+                t_row['MSKU'] = '🌟 已选合计'
+                for c in [spu_c, 'ASIN']:
+                    if c in s_cols:
+                        t_row[c] = '-'
+                for c in [f'{prefix}销售额', '订单毛利润', '广告花费', '广告销售额', '可用量', '待到合计', '建议补货量', f'{prefix}日均订单']:
+                    if c in s_cols:
+                        t_row[c] = pd.to_numeric(target_df.get(c, 0), errors='coerce').sum()
+                if '订单毛利率' in s_cols:
+                    t_row['订单毛利率'] = _sd('订单毛利润', f'{prefix}销售额')
+                if 'ACOS' in s_cols:
+                    t_row['ACOS'] = _sd('广告花费', '广告销售额')
+                if 'ACoAS' in s_cols:
+                    t_row['ACoAS'] = _sd('广告花费', f'{prefix}销售额')
+                if 'CPC' in s_cols:
+                    t_row['CPC'] = _sd('广告花费', '广告点击数')
+                if '广告CVR' in s_cols:
+                    t_row['广告CVR'] = _sd('广告订单', '广告点击数')
+                if 'CTR' in s_cols:
+                    t_row['CTR'] = _sd('广告点击数', '广告曝光量')
+                if f'{prefix}销售转化率' in s_cols:
+                    t_row[f'{prefix}销售转化率'] = _sd(f'{prefix}订单商品总数', f'{prefix}会话数')
+                if '预计可售天数' in s_cols:
+                    t_row['预计可售天数'] = _sd('总供给', '预测日销量')
+                st.dataframe(pd.concat([t_row.to_frame().T, target_df[s_cols]], ignore_index=True).style.format(fmt_d), height=350, use_container_width=True)
+            else:
+                sc = [f'{prefix}销售额', '订单毛利润', '可用量', '待到合计', '建议补货量', '广告花费', '广告销售额', '广告订单', '广告点击数', '广告曝光量',
+                      f'{prefix}订单商品总数', f'{prefix}会话数', f'{prefix}日均订单', '7天销售额', '总供给', '预测日销量']
+                sc = list(set([c for c in sc if c in df_vis.columns]))
+                for c in sc:
+                    df_vis[c] = pd.to_numeric(df_vis[c], errors='coerce').fillna(0)
+                sp_df = df_vis.groupby(spu_c, dropna=False)[sc].sum().reset_index()
+                sp_df = sp_df[sp_df[spu_c].astype(str).str.strip() != '']
 
-                    sp_df['订单毛利率'] = np.where(sp_df.get('7天销售额', 0) > 0, sp_df.get('订单毛利润', 0) / sp_df.get('7天销售额', 1), 0)
-                    sp_df['ACOS'] = np.where(sp_df.get('广告销售额', 0) > 0, sp_df.get('广告花费', 0) / sp_df.get('广告销售额', 1), 0)
-                    sp_df['ACoAS'] = np.where(sp_df.get(f'{prefix}销售额', 0) > 0, sp_df.get('广告花费', 0) / sp_df.get(f'{prefix}销售额', 1), 0)
-                    sp_df['CPC'] = np.where(sp_df.get('广告点击数', 0) > 0, sp_df.get('广告花费', 0) / sp_df.get('广告点击数', 1), 0)
-                    sp_df['广告CVR'] = np.where(sp_df.get('广告点击数', 0) > 0, sp_df.get('广告订单', 0) / sp_df.get('广告点击数', 1), 0)
-                    sp_df['CTR'] = np.where(sp_df.get('广告曝光量', 0) > 0, sp_df.get('广告点击数', 0) / sp_df.get('广告曝光量', 1), 0)
-                    sp_df[f'{prefix}销售转化率'] = np.where(sp_df.get(f'{prefix}会话数', 0) > 0, sp_df.get(f'{prefix}订单商品总数', 0) / sp_df.get(f'{prefix}会话数', 1), 0)
-                    sp_df['预计可售天数'] = np.where(sp_df.get('预测日销量', 0) > 0, sp_df.get('总供给', 0) / sp_df.get('预测日销量', 1), 0)
+                sp_df['订单毛利率'] = np.where(sp_df.get('7天销售额', 0) > 0, sp_df.get('订单毛利润', 0) / sp_df.get('7天销售额', 1), 0)
+                sp_df['ACOS'] = np.where(sp_df.get('广告销售额', 0) > 0, sp_df.get('广告花费', 0) / sp_df.get('广告销售额', 1), 0)
+                sp_df['ACoAS'] = np.where(sp_df.get(f'{prefix}销售额', 0) > 0, sp_df.get('广告花费', 0) / sp_df.get(f'{prefix}销售额', 1), 0)
+                sp_df['CPC'] = np.where(sp_df.get('广告点击数', 0) > 0, sp_df.get('广告花费', 0) / sp_df.get('广告点击数', 1), 0)
+                sp_df['广告CVR'] = np.where(sp_df.get('广告点击数', 0) > 0, sp_df.get('广告订单', 0) / sp_df.get('广告点击数', 1), 0)
+                sp_df['CTR'] = np.where(sp_df.get('广告曝光量', 0) > 0, sp_df.get('广告点击数', 0) / sp_df.get('广告曝光量', 1), 0)
+                sp_df[f'{prefix}销售转化率'] = np.where(sp_df.get(f'{prefix}会话数', 0) > 0, sp_df.get(f'{prefix}订单商品总数', 0) / sp_df.get(f'{prefix}会话数', 1), 0)
+                sp_df['预计可售天数'] = np.where(sp_df.get('预测日销量', 0) > 0, sp_df.get('总供给', 0) / sp_df.get('预测日销量', 1), 0)
 
-                    sh_c = [c for c in [spu_c, f'{prefix}销售额', '订单毛利润', '订单毛利率', '广告花费', '广告销售额', 'ACOS', 'ACoAS', 'CPC', '广告CVR', 'CTR', f'{prefix}销售转化率', f'{prefix}日均订单', '可用量', '待到合计', '预计可售天数', '建议补货量'] if c in sp_df.columns]
-                    st.dataframe(sp_df[sh_c].style.format(fmt_d), height=350, use_container_width=True)
-
-            with c_r:
-                st.markdown("##### 🏆 TOP 销售额贡献榜")
-                rank_col = 'MSKU' if is_filtered else spu_c
-                r_df = (target_df if is_filtered else sp_df).copy()
-                if f'{prefix}销售额' in r_df.columns:
-                    top_df = r_df.nlargest(10, f'{prefix}销售额')
-                    fig_r = px.bar(top_df, x=f'{prefix}销售额', y=rank_col, orientation='h', color=f'{prefix}销售额',
-                                   color_continuous_scale='Blues', text_auto='.2s')
-                    fig_r.update_layout(yaxis={'categoryorder': 'total ascending'}, showlegend=False, margin=dict(l=0, r=0, t=0, b=0), height=350)
-                    st.plotly_chart(fig_r, use_container_width=True)
+                sh_c = [c for c in [spu_c, f'{prefix}销售额', '订单毛利润', '订单毛利率', '广告花费', '广告销售额', 'ACOS', 'ACoAS', 'CPC', '广告CVR', 'CTR', f'{prefix}销售转化率', f'{prefix}日均订单', '可用量', '待到合计', '预计可售天数', '建议补货量'] if c in sp_df.columns]
+                st.dataframe(sp_df[sh_c].style.format(fmt_d), height=350, use_container_width=True)
 
     with tab2:
         c_c1, c_c2 = st.columns([1, 1.5])
@@ -740,6 +729,7 @@ if "df_vis" in st.session_state:
                     st.plotly_chart(fg2, use_container_width=True)
 
     st.markdown("---")
-    st.download_button(label="📥 下载完整【V42·SRE紧急修复版.xlsx】", data=st.session_state.processed_excel,
-                       file_name=f"V42_全息极速大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+    st.download_button(label="📥 下载完整【智能补货分析.xlsx】", data=st.session_state.processed_excel,
+                       file_name=f"智能补货分析_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+```
