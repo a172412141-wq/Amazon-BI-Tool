@@ -925,4 +925,7 @@ if "df_vis" in st.session_state:
     st.download_button(
         label="📥 下载完整【V30·双重排雷及最新全聚合版.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V30_多店聚合补货分析_{timestamp_str}.
+        file_name=f"V30_多店聚合补货分析_{timestamp_str}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
