@@ -371,6 +371,18 @@ if run_btn:
             merged = merge_traffic_with_shop_validation(merged, df_14)
             merged = merged.loc[:, ~merged.columns.duplicated()]
 
+            agg_dict = {}
+            for col in merged.columns:
+                if col == 'MSKU': continue
+                elif col == '店铺':
+                    agg_dict[col] = lambda x: ' | '.join(sorted(set(str(v).strip() for v in x.dropna() if str(v).strip() not in ['', 'nan', 'NaN', 'None'])))
+                elif pd.api.types.is_numeric_dtype(merged[col]):
+                    agg_dict[col] = 'sum'
+                else:
+                    agg_dict[col] = 'first'
+                    
+            merged = merged.groupby('MSKU', as_index=False, dropna=False).agg(agg_dict)
+
             if df_inventory is not None and not df_inventory.empty:
                 df_inventory = df_inventory.loc[:, ~df_inventory.columns.duplicated()]
                 merged = pd.merge(merged, df_inventory, left_on='SKU_KEY', right_on='join_key', how='left')
@@ -557,7 +569,7 @@ if run_btn:
                         if isinstance(val, (int, float)):
                             if any(x in col_name for x in ["率", "CTR", "ACOS", "ACoAS", "CVR", "占比"]):
                                 cell.number_format = '0.00%'
-                            elif any(x in col_name for x in ["送达", "待到", "可用", "库龄", "补货", "供给", "需求", "发货", "点击", "曝光", "展示", "数量", "会话", "浏览"]):
+                            elif any(x in col_name for x in ["送达", "待到", "可用", "库龄", "补货", "供给", "需求", "数量", "待发货", "点击", "曝光", "展示", "会话", "浏览"]):
                                 cell.number_format = '#,##0'
                             elif "天数" in col_name:
                                 cell.number_format = '0.0'
@@ -670,40 +682,61 @@ if "df_vis" in st.session_state:
     
     st.markdown("---")
     
-    # 🌟 核心优化：排版升级为三列，加入 SKU 级联筛选器
-    col_t1, col_t2, col_t3 = st.columns([1, 1.5, 1.5])
+    # 🌟 核心优化：排版升级为四列，加入店铺级联
+    col_t1, col_t2, col_t3, col_t4 = st.columns([0.8, 1.2, 1.2, 1.2])
     with col_t1:
-        st.markdown("##### ⏱️ 分析时间窗口")
+        st.markdown("##### ⏱️ 分析周期")
         time_window = st.radio("选择数据周期：", ["7天数据表现", "14天数据表现"], horizontal=True, label_visibility="collapsed")
         prefix = "7天" if "7天" in time_window else "14天"
     
-    spu_col = find_col_fuzzy_priority(df_vis, ['SPU', '父ASIN'])
     with col_t2:
-        st.markdown("##### 🔍 链接 (SPU) 筛选器")
+        st.markdown("##### 🏢 店铺筛选器")
+        if '店铺' in df_vis.columns:
+            all_stores = set()
+            for s in df_vis['店铺'].dropna():
+                for part in str(s).split('|'):
+                    cl = part.strip()
+                    if cl: all_stores.add(cl)
+            store_list = sorted(list(all_stores))
+            selected_stores = st.multiselect("选择店铺 (支持多选)：", options=store_list, default=[], label_visibility="collapsed")
+        else:
+            selected_stores = []
+            st.warning("⚠️ 未找到店铺列")
+
+    # 店铺过滤逻辑
+    if selected_stores:
+        def has_selected_store(row_store_str):
+            for s in selected_stores:
+                if s in str(row_store_str): return True
+            return False
+        temp_df_store = df_vis[df_vis['店铺'].apply(has_selected_store)]
+    else:
+        temp_df_store = df_vis
+
+    spu_col = find_col_fuzzy_priority(temp_df_store, ['SPU', '父ASIN'])
+    with col_t3:
+        st.markdown("##### 🔍 链接 (SPU)")
         if spu_col:
-            spu_list = sorted(df_vis[df_vis[spu_col].astype(str).str.strip() != ''][spu_col].dropna().unique().tolist())
+            spu_list = sorted(temp_df_store[temp_df_store[spu_col].astype(str).str.strip() != ''][spu_col].dropna().unique().tolist())
             selected_spus = st.multiselect("选择 SPU (支持多选)：", options=spu_list, default=[], label_visibility="collapsed")
         else:
             selected_spus = []
-            st.warning("⚠️ 数据表中未找到 SPU 或 父ASIN 列")
+            st.warning("⚠️ 未找到 SPU 列")
 
-    # 🌟 智能级联：如果选了 SPU，就只把该 SPU 下的 SKU 拿出来当做选项
-    temp_df = df_vis[df_vis[spu_col].isin(selected_spus)] if selected_spus and spu_col else df_vis
+    temp_df_spu = temp_df_store[temp_df_store[spu_col].isin(selected_spus)] if selected_spus and spu_col else temp_df_store
     
-    with col_t3:
-        st.markdown("##### 🔍 子体 (SKU) 筛选器")
-        if 'MSKU' in temp_df.columns:
-            sku_list = sorted(temp_df[temp_df['MSKU'].astype(str).str.strip() != '']['MSKU'].dropna().unique().tolist())
+    with col_t4:
+        st.markdown("##### 🔍 子体 (SKU)")
+        if 'MSKU' in temp_df_spu.columns:
+            sku_list = sorted(temp_df_spu[temp_df_spu['MSKU'].astype(str).str.strip() != '']['MSKU'].dropna().unique().tolist())
             selected_skus = st.multiselect("选择 SKU (支持多选)：", options=sku_list, default=[], label_visibility="collapsed")
         else:
             selected_skus = []
-            st.warning("⚠️ 数据表中未找到 MSKU 列")
+            st.warning("⚠️ 未找到 MSKU 列")
 
-    # 🌟 最终联动数据：根据 SKU 筛选结果截取大盘数据
-    target_df = temp_df[temp_df['MSKU'].isin(selected_skus)] if selected_skus else temp_df
+    target_df = temp_df_spu[temp_df_spu['MSKU'].isin(selected_skus)] if selected_skus else temp_df_spu
     
-    # 判断是否开启了任何筛选动作
-    is_filtered = bool(selected_spus or selected_skus)
+    is_filtered = bool(selected_stores or selected_spus or selected_skus)
     
     def safe_sum(df_source, col_name):
         if col_name in df_source.columns:
@@ -758,7 +791,7 @@ if "df_vis" in st.session_state:
             def _safe_div(a, b): return float(a) / float(b) if float(b) > 0 else 0.0
 
             if is_filtered:
-                st.markdown("##### 📝 已筛选 SPU/SKU 的明细表 (微观视角)")
+                st.markdown("##### 📝 已筛选维度的明细表 (微观视角)")
                 sku_df = target_df.copy()
                 show_cols = ['MSKU', spu_col, f'{prefix}销售额', '订单毛利润', '订单毛利率', '广告花费', '广告销售额', 'ACOS', 'ACoAS', 'CPC', '广告CVR', 'CTR', f'{prefix}销售转化率', f'{prefix}日均订单', '可用量', '待到合计', '预计可售天数', '建议补货量']
                 show_cols = [c for c in show_cols if c in sku_df.columns]
@@ -884,9 +917,9 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V28·级联筛选终极版.xlsx】",
+        label="📥 下载完整【V29·三级智能穿透大盘.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V28_精准穿透分析大盘_{timestamp_str}.xlsx",
+        file_name=f"V29_多店聚合补货分析_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
