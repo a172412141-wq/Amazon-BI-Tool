@@ -112,7 +112,6 @@ def process_traffic_data(files, prefix):
             if shop_col: df['traffic_shop'] = df[shop_col].astype(str).str.strip()
             else: df['traffic_shop'] = 'Unknown'
                 
-            # 🌟 修复区 1：多维精准锁定，彻底排除带有“广告”字眼的干扰列
             indicators = [
                 (["会话", "Sessions"], ["广告", "Ad", "B2B"], "会话数"), 
                 (["页面浏览", "Views"], ["广告", "Ad", "B2B"], "页面浏览量"),
@@ -351,11 +350,14 @@ if run_btn:
                 master_df = master_df.loc[:, ~master_df.columns.duplicated()]
                 traffic_df = traffic_df.loc[:, ~traffic_df.columns.duplicated()]
                 
-                # 🌟 修复区 2：强制踢除重名老列，无情覆盖亚马逊最新数据
                 traffic_data_cols = [c for c in traffic_df.columns if c not in ['join_key', 'traffic_shop']]
+                
+                # 🌟 V31 终极修复：ERP 永远是绝对权威 (King)！
+                # 提前识别流量表里有哪些列是主表(ERP)里已经有的。如果有，直接把流量表里的该列踢掉！绝不覆盖！
                 overlap = [c for c in traffic_data_cols if c in master_df.columns]
                 if overlap:
-                    master_df = master_df.drop(columns=overlap)
+                    traffic_df = traffic_df.drop(columns=overlap)
+                    traffic_data_cols = [c for c in traffic_df.columns if c not in ['join_key', 'traffic_shop']]
                 
                 temp = pd.merge(master_df, traffic_df, left_on='MSKU', right_on='join_key', how='left')
                 if '店铺' in temp.columns and 'traffic_shop' in temp.columns:
@@ -368,9 +370,11 @@ if run_btn:
                         if not is_match(row):
                             for col in traffic_data_cols:
                                 if col in temp.columns: temp.at[idx, col] = 0
+                                
                 if 'join_key' in temp.columns: del temp['join_key']
                 if 'traffic_shop' in temp.columns: del temp['traffic_shop']
-                group_keys = [c for c in master_df.columns if c not in traffic_data_cols]
+                
+                group_keys = [c for c in master_df.columns]
                 temp = temp.groupby(group_keys, dropna=False)[traffic_data_cols].sum().reset_index()
                 return temp
 
@@ -923,9 +927,9 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V30·双重排雷及最新全聚合版.xlsx】",
+        label="📥 下载完整【V31·精准归因聚合版.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V30_多店聚合补货分析_{timestamp_str}.xlsx",
+        file_name=f"V31_精准归因补货分析_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
