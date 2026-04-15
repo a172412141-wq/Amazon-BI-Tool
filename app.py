@@ -9,24 +9,8 @@ import plotly.express as px
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ================= 1. 网页全局配置与密码锁 =================
+# ================= 1. 网页全局配置 (无密码版) =================
 st.set_page_config(page_title="智能补货与数据中台", page_icon="📦", layout="wide")
-
-TEAM_PASSWORD = "YOETEY2026"
-
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    st.title("🔒 内部数据中台 - 安全验证")
-    pwd_input = st.text_input("请输入团队专属访问密码：", type="password")
-    if st.button("🚀 验证并登录", type="primary"):
-        if pwd_input == TEAM_PASSWORD:
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("❌ 密码错误，请联系管理员获取最新密码。")
-    st.stop()
 
 # ================= 下面是核心系统代码 =================
 st.markdown("""
@@ -285,7 +269,7 @@ if run_btn:
             st.error("❌ 严重错误：未能识别到合规的【产品表现表】！请确保文件名包含“产品表现”或“白名单”字样。")
             st.stop()
 
-        with st.spinner("🧠 正在回滚至 V28 稳固架构 (方案A: 保持店铺级数据独立)，请稍候..."):
+        with st.spinner("🧠 正在极速清洗与核对数据，请稍候..."):
             df_whitelist = None
             all_data_dfs = []
             for f in files_product:
@@ -380,12 +364,6 @@ if run_btn:
             merged = merge_traffic_with_shop_validation(merged, df_14)
             merged = merged.loc[:, ~merged.columns.duplicated()]
 
-            # =========================================================================
-            # 🌟 回滚至 V28 的真·方案A 逻辑！
-            # 绝对不能在这里做 groupby.agg，必须让多店铺保持独立行，否则数据会丢失！
-            # =========================================================================
-
-            # 直接向每一行贴入库存和库龄数据
             if df_inventory is not None and not df_inventory.empty:
                 df_inventory = df_inventory.loc[:, ~df_inventory.columns.duplicated()]
                 merged = pd.merge(merged, df_inventory, left_on='SKU_KEY', right_on='join_key', how='left')
@@ -401,7 +379,6 @@ if run_btn:
             cols_fill = [c for c in merged.columns if any(x in c for x in fill_keywords)]
             merged[cols_fill] = merged[cols_fill].fillna(0)
 
-            # 规范化列名 (确保 ERP 里的列名能被统一识别)
             col_impressions = find_col_fuzzy_priority(merged, ['展示', '广告曝光', '曝光', 'Impressions'])
             if col_impressions and col_impressions != '广告曝光量': merged.rename(columns={col_impressions: '广告曝光量'}, inplace=True)
             elif not col_impressions: merged['广告曝光量'] = 0
@@ -426,13 +403,11 @@ if run_btn:
             if col_profit and col_profit != '订单毛利润': merged.rename(columns={col_profit: '订单毛利润'}, inplace=True)
             elif not col_profit: merged['订单毛利润'] = 0
 
-            # 强力清洗：把所有带有 $、,、% 的字符串变成纯数字
             cols_to_numeric = ['订单毛利润', '广告花费', '广告点击数', '广告销售额', '广告订单', '7天销售额', '14天销售额', '广告曝光量', '7天订单商品总数', '14天订单商品总数', '7天会话数', '14天会话数']
             for col in cols_to_numeric:
                 if col in merged.columns:
                     merged[col] = merged[col].apply(lambda x: clean_percentage_or_money(x, col))
 
-            # 重算比例
             if '广告花费' in merged.columns and '广告销售额' in merged.columns:
                 merged['ACOS'] = merged.apply(lambda x: x['广告花费'] / x['广告销售额'] if x['广告销售额'] > 0 else 0, axis=1)
             if '广告花费' in merged.columns and '广告点击数' in merged.columns:
@@ -458,7 +433,6 @@ if run_btn:
             valid_inv = [c for c in inv_cols if c in merged.columns]
             merged['待到合计'] = merged[valid_inv].sum(axis=1)
 
-            # 计算总需求
             merged['预测日销量'] = (merged['7天日均订单'] + merged['14天日均订单']) / 2
             sku_agg = merged.groupby('MSKU').agg({'预测日销量': 'sum'}).rename(columns={'预测日销量': 'SKU_总日均'})
             merged = pd.merge(merged, sku_agg, on='MSKU', how='left')
@@ -469,7 +443,7 @@ if run_btn:
             merged['预计可售天数'] = merged.apply(lambda x: x['总供给'] / x['SKU_总日均'] if x['SKU_总日均'] > 0.1 else 999, axis=1)
 
             # =========================================================================
-            # 🌟 真·方案 A 的灵魂：抹平副店铺的库存数据，绝不翻倍，同时保留各店铺GMV独立！
+            # 🌟 方案A 核心: 防止库存翻倍，各店铺独立保留 GMV 和花费
             # =========================================================================
             merged = merged.sort_values(by=['MSKU', '7天销售额'], ascending=[True, False]).reset_index(drop=True)
             
@@ -486,7 +460,6 @@ if run_btn:
             merged['理论需求量'] = merged['预测日销量'] * TARGET_DAYS_TOTAL
             merged.drop(columns=['SKU_总日均'], inplace=True)
 
-            # 调整列顺序
             cols_to_move_front = ['预测日销量', '建议补货量', '预计可售天数', '理论需求量', '总供给']
             cols_to_move_front = [c for c in cols_to_move_front if c in merged.columns]
             cols_others = [c for c in merged.columns if c not in cols_to_move_front]
@@ -933,9 +906,9 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V33·回滚恢复稳定级大盘.xlsx】",
+        label="📥 下载完整【V34·极速稳定纯净大盘.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V33_最终稳定补货分析_{timestamp_str}.xlsx",
+        file_name=f"V34_无密码稳定版大盘_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
