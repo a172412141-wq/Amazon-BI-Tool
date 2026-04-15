@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -732,4 +731,3 @@ if "df_vis" in st.session_state:
     st.download_button(label="📥 下载完整【智能补货分析.xlsx】", data=st.session_state.processed_excel,
                        file_name=f"智能补货分析_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-```
