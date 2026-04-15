@@ -48,13 +48,14 @@ def clean_columns(df):
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
-def find_col(df, exacts, fuzzys=[]):
+def find_col(df, exacts, fuzzys=None):
+    if fuzzys is None: fuzzys = []
     for kw in exacts:
         for c in df.columns:
-            if kw.lower() == c.lower(): return c
+            if kw.lower() == str(c).lower(): return c
     for kw in fuzzys:
         for c in df.columns:
-            if kw.lower() in c.lower(): return c
+            if kw.lower() in str(c).lower(): return c
     return None
 
 def read_file(f):
@@ -72,7 +73,7 @@ def process_traffic(files, prefix):
             sku_col = find_col(df, ['SKU', '子ASIN'], ['(Child)'])
             if not sku_col: continue
             df['join_key'] = df[sku_col].apply(clean_msku_strict)
-            shop_col = find_col(df, ['店铺', 'Shop', 'Store', 'Account', '账号'])
+            shop_col = find_col(df, ['店铺', 'Shop', 'Store', 'Account', '账号'], ['店铺', 'Shop', 'Store'])
             df['traffic_shop'] = df[shop_col].astype(str).str.strip() if shop_col else 'Unknown'
             
             indicators = [
@@ -138,8 +139,8 @@ def process_age(files):
             if not c_sku: continue
             res = pd.DataFrame({'join_key': df[c_sku].apply(clean_msku_strict)})
             
-            c_age = find_col(df, ['库龄', 'Age'])
-            c_qty = find_col(df, ['海外仓在库', '可用', '可用量', '在库数量'])
+            c_age = find_col(df, ['库龄', 'Age'], ['库龄', 'Age'])
+            c_qty = find_col(df, ['海外仓在库', '可用', '可用量', '在库数量'], ['可用'])
             
             if c_age and c_qty and not find_col(df, ["0~30", "0-30"]):
                 qty, age = to_numeric_fast(df[c_qty]), to_numeric_fast(df[c_age])
@@ -202,21 +203,21 @@ if run_btn:
                     c_msku = find_col(df, ['MSKU', '商家SKU'], ['sku'])
                     if c_msku:
                         df['MSKU'] = df[c_msku].apply(clean_msku_strict)
-                        c_shop = find_col(df, ['店铺', 'Shop', 'Store'])
+                        c_shop = find_col(df, ['店铺', 'Shop', 'Store'], ['店铺', 'Shop'])
                         if c_shop:
                             df['店铺'] = df[c_shop].astype(str).str.strip()
                             df_wl = df[['MSKU', '店铺']].drop_duplicates()
                         else: df_wl = df[['MSKU']].drop_duplicates()
                     continue
                 
-                c_msku = find_col(df, ['MSKU', '商家SKU'])
-                c_sku = find_col(df, ['SKU', 'FNSKU'])
+                c_msku = find_col(df, ['MSKU', '商家SKU'], ['MSKU', 'sku'])
+                c_sku = find_col(df, ['SKU', 'FNSKU'], ['SKU', 'FNSKU'])
                 if c_msku:
                     df['MSKU'] = df[c_msku].apply(clean_msku_strict)
                     df['SKU_KEY'] = df[c_sku].apply(clean_msku_strict) if c_sku else df['MSKU']
-                    c_shop = find_col(df, ['店铺', 'Shop', 'Store'])
+                    c_shop = find_col(df, ['店铺', 'Shop', 'Store'], ['店铺', 'Shop'])
                     if c_shop: df['店铺'] = df[c_shop].astype(str).str.strip()
-                    c_asin = find_col(df, ['ASIN', '子ASIN'])
+                    c_asin = find_col(df, ['ASIN', '子ASIN'], ['ASIN'])
                     if c_asin and c_asin != 'ASIN': df.rename(columns={c_asin: 'ASIN'}, inplace=True)
                     all_data_dfs.append(df)
             
@@ -272,10 +273,17 @@ if run_btn:
                                 if col in temp.columns: temp.at[idx, col] = 0
                 return temp.drop(columns=['join_key', 'traffic_shop'], errors='ignore').groupby([c for c in m_df.columns if c not in t_cols], dropna=False)[t_cols].sum().reset_index()
 
-            # 🌟 V39 核心修复: 拆解链式操作，彻底杜绝 IndexError
             merged = merge_traffic(df_master.copy(), df_7)
-            merged = merge_traffic(merged, df_14)
-            merged = merged.loc[:, ~merged.columns.duplicated()]
+            merged = merge_traffic(merged, df_14).loc[:, ~merged.columns.duplicated()]
+
+            # 多店铺预聚合
+            agg_d = {}
+            for c in merged.columns:
+                if c == 'MSKU': continue
+                elif c == '店铺': agg_d[c] = lambda x: ' | '.join(sorted(set(str(v).strip() for v in x.dropna() if str(v).strip() not in ['', 'nan'])))
+                elif pd.api.types.is_numeric_dtype(merged[c]): agg_d[c] = 'sum'
+                else: agg_d[c] = 'first'
+            merged = merged.groupby('MSKU', as_index=False, dropna=False).agg(agg_d)
 
             # 贴入库存与库龄
             for df_t in [df_inventory, df_age]:
@@ -416,7 +424,7 @@ if "df_vis" in st.session_state:
     df_vis = st.session_state.df_vis.loc[:, ~st.session_state.df_vis.columns.duplicated()].copy()
     st.markdown("---")
     
-    # 🌟 BI 可视化大升级：全息逆向穿透控制台
+    # 🌟 BI 可视化大升级：全息逆向穿透控制台 (已修复旧函数引用)
     c_t1, c_t2, c_t3, c_t4, c_t5 = st.columns([0.8, 1, 1, 1, 1.2])
     with c_t1:
         st.markdown("##### ⏱️ 分析周期")
@@ -430,7 +438,7 @@ if "df_vis" in st.session_state:
         sel_s = st.multiselect("店", opt_s, label_visibility="collapsed")
         if sel_s: df_f = df_f[df_f['店铺'].apply(lambda x: any(s in str(x) for s in sel_s))]
 
-    spu_c = find_col_fuzzy(df_f, ['SPU', '父ASIN'])
+    spu_c = find_col(df_f, ['SPU', '父ASIN'], ['SPU', '父ASIN'])
     with c_t3:
         st.markdown("##### 🔗 SPU")
         opt_p = sorted(df_f[spu_c].dropna().unique().tolist()) if spu_c else []
@@ -554,4 +562,4 @@ if "df_vis" in st.session_state:
                     st.plotly_chart(fg2, use_container_width=True)
 
     st.markdown("---")
-    st.download_button(label="📥 下载完整【V39·修复防越界版.xlsx】", data=st.session_state.processed_excel, file_name=f"V39_极速安全大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    st.download_button(label="📥 下载完整【V40·全息穿透修复版.xlsx】", data=st.session_state.processed_excel, file_name=f"V40_全息极速大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
