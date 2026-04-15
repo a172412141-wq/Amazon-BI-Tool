@@ -285,7 +285,7 @@ if run_btn:
             st.error("❌ 严重错误：未能识别到合规的【产品表现表】！请确保文件名包含“产品表现”或“白名单”字样。")
             st.stop()
 
-        with st.spinner("🧠 正在执行方案A(主次店铺智能分配)进行精准运算，请稍候..."):
+        with st.spinner("🧠 正在执行引擎重构：前置清洗与全量合并，请稍候..."):
             df_whitelist = None
             all_data_dfs = []
             for f in files_product:
@@ -351,9 +351,6 @@ if run_btn:
                 traffic_df = traffic_df.loc[:, ~traffic_df.columns.duplicated()]
                 
                 traffic_data_cols = [c for c in traffic_df.columns if c not in ['join_key', 'traffic_shop']]
-                
-                # 🌟 V31 终极修复：ERP 永远是绝对权威 (King)！
-                # 提前识别流量表里有哪些列是主表(ERP)里已经有的。如果有，直接把流量表里的该列踢掉！绝不覆盖！
                 overlap = [c for c in traffic_data_cols if c in master_df.columns]
                 if overlap:
                     traffic_df = traffic_df.drop(columns=overlap)
@@ -374,7 +371,7 @@ if run_btn:
                 if 'join_key' in temp.columns: del temp['join_key']
                 if 'traffic_shop' in temp.columns: del temp['traffic_shop']
                 
-                group_keys = [c for c in master_df.columns]
+                group_keys = [c for c in master_df.columns if c not in traffic_data_cols]
                 temp = temp.groupby(group_keys, dropna=False)[traffic_data_cols].sum().reset_index()
                 return temp
 
@@ -383,36 +380,14 @@ if run_btn:
             merged = merge_traffic_with_shop_validation(merged, df_14)
             merged = merged.loc[:, ~merged.columns.duplicated()]
 
-            agg_dict = {}
-            for col in merged.columns:
-                if col == 'MSKU': continue
-                elif col == '店铺':
-                    agg_dict[col] = lambda x: ' | '.join(sorted(set(str(v).strip() for v in x.dropna() if str(v).strip() not in ['', 'nan', 'NaN', 'None'])))
-                elif pd.api.types.is_numeric_dtype(merged[col]):
-                    agg_dict[col] = 'sum'
-                else:
-                    agg_dict[col] = 'first'
-                    
-            merged = merged.groupby('MSKU', as_index=False, dropna=False).agg(agg_dict)
-
-            if df_inventory is not None and not df_inventory.empty:
-                df_inventory = df_inventory.loc[:, ~df_inventory.columns.duplicated()]
-                merged = pd.merge(merged, df_inventory, left_on='SKU_KEY', right_on='join_key', how='left')
-                if 'join_key' in merged.columns: del merged['join_key']
-                
-            merged = merged.loc[:, ~merged.columns.duplicated()]
-            if df_age is not None and not df_age.empty:
-                df_age = df_age.loc[:, ~df_age.columns.duplicated()]
-                merged = pd.merge(merged, df_age, left_on='SKU_KEY', right_on='join_key', how='left')
-                if 'join_key' in merged.columns: del merged['join_key']
-
-            fill_keywords = ['7天', '14天', '21天', '28天', '库龄', '可用量', '待发货', '广告', '花费', 'CTR', 'ACOS', 'ACoAS', '点击', '曝光', '展示']
-            cols_fill = [c for c in merged.columns if any(x in c for x in fill_keywords)]
-            merged[cols_fill] = merged[cols_fill].fillna(0)
-
+            # =========================================================================
+            # 🌟 V32 核心重构：在聚合(GROUPBY)之前，必须先改名并强转数字，彻底解决数据丢失Bug
+            # =========================================================================
+            
+            # 1. 规范化列名 (确保 ERP 里的列名能被统一识别)
             col_impressions = find_col_fuzzy_priority(merged, ['展示', '广告曝光', '曝光', 'Impressions'])
-            if col_impressions: merged.rename(columns={col_impressions: '广告曝光量'}, inplace=True)
-            else: merged['广告曝光量'] = 0
+            if col_impressions and col_impressions != '广告曝光量': merged.rename(columns={col_impressions: '广告曝光量'}, inplace=True)
+            elif not col_impressions: merged['广告曝光量'] = 0
 
             col_clicks = find_col_fuzzy_priority(merged, ['广告点击数', '点击'])
             if col_clicks and col_clicks != '广告点击数': merged.rename(columns={col_clicks: '广告点击数'}, inplace=True)
@@ -427,13 +402,34 @@ if run_btn:
             elif not col_spend: merged['广告花费'] = 0
 
             col_ad_sales = find_col_fuzzy_priority(merged, ['广告销售额'])
-            if not col_ad_sales: merged['广告销售额'] = 0
+            if col_ad_sales and col_ad_sales != '广告销售额': merged.rename(columns={col_ad_sales: '广告销售额'}, inplace=True)
+            elif not col_ad_sales: merged['广告销售额'] = 0
+            
+            col_profit = find_col_fuzzy_priority(merged, ['订单毛利润', '毛利润', '毛利额'])
+            if col_profit and col_profit != '订单毛利润': merged.rename(columns={col_profit: '订单毛利润'}, inplace=True)
+            elif not col_profit: merged['订单毛利润'] = 0
 
-            cols_to_numeric = ['订单毛利率', '订单毛利润', '广告花费', 'CTR', '广告CVR', 'CPC', 'ACOS', 'ACoAS', '广告点击数', '广告销售额', '广告订单', '7天销售额', '14天销售额', '广告曝光量']
+            # 2. 强力清洗：把所有带有 $、,、% 的字符串强制变成纯数字！
+            # 这是为了确保后面的 groupby 能顺利对数字进行 sum(求和)，而不是对字符串取 first(第一个)！
+            cols_to_numeric = ['订单毛利润', '广告花费', '广告点击数', '广告销售额', '广告订单', '7天销售额', '14天销售额', '广告曝光量', '7天订单商品总数', '14天订单商品总数', '7天会话数', '14天会话数']
             for col in cols_to_numeric:
                 if col in merged.columns:
                     merged[col] = merged[col].apply(lambda x: clean_percentage_or_money(x, col))
 
+            # 3. 多店铺终极聚合 (现在全是纯数字，绝不会再丢数据！)
+            agg_dict = {}
+            for col in merged.columns:
+                if col == 'MSKU': continue
+                elif col == '店铺':
+                    agg_dict[col] = lambda x: ' | '.join(sorted(set(str(v).strip() for v in x.dropna() if str(v).strip() not in ['', 'nan', 'NaN', 'None'])))
+                elif pd.api.types.is_numeric_dtype(merged[col]):
+                    agg_dict[col] = 'sum'
+                else:
+                    agg_dict[col] = 'first'
+                    
+            merged = merged.groupby('MSKU', as_index=False, dropna=False).agg(agg_dict)
+
+            # 4. 后置比例重算 (必须在绝对值相加之后再算比例，避免比例直接相加变成 400%)
             if '广告花费' in merged.columns and '广告销售额' in merged.columns:
                 merged['ACOS'] = merged.apply(lambda x: x['广告花费'] / x['广告销售额'] if x['广告销售额'] > 0 else 0, axis=1)
             if '广告花费' in merged.columns and '广告点击数' in merged.columns:
@@ -444,6 +440,25 @@ if run_btn:
                 merged['广告CVR'] = merged.apply(lambda x: x['广告订单'] / x['广告点击数'] if x['广告点击数'] > 0 else 0, axis=1)
             if '广告点击数' in merged.columns and '广告曝光量' in merged.columns:
                 merged['CTR'] = merged.apply(lambda x: x['广告点击数'] / x['广告曝光量'] if x['广告曝光量'] > 0 else 0, axis=1)
+            if '订单毛利润' in merged.columns and '7天销售额' in merged.columns:
+                merged['订单毛利率'] = merged.apply(lambda x: x['订单毛利润'] / x['7天销售额'] if x['7天销售额'] > 0 else 0, axis=1)
+
+            # =========================================================================
+
+            if df_inventory is not None and not df_inventory.empty:
+                df_inventory = df_inventory.loc[:, ~df_inventory.columns.duplicated()]
+                merged = pd.merge(merged, df_inventory, left_on='SKU_KEY', right_on='join_key', how='left')
+                if 'join_key' in merged.columns: del merged['join_key']
+                
+            merged = merged.loc[:, ~merged.columns.duplicated()]
+            if df_age is not None and not df_age.empty:
+                df_age = df_age.loc[:, ~df_age.columns.duplicated()]
+                merged = pd.merge(merged, df_age, left_on='SKU_KEY', right_on='join_key', how='left')
+                if 'join_key' in merged.columns: del merged['join_key']
+
+            fill_keywords = ['7天', '14天', '21天', '28天', '库龄', '可用量', '待发货']
+            cols_fill = [c for c in merged.columns if any(x in c for x in fill_keywords)]
+            merged[cols_fill] = merged[cols_fill].fillna(0)
 
             if 'MSKU' in merged.columns:
                 merged['商品属性'] = merged['MSKU'].apply(lambda x: '二手商品' if 'amzn.gr' in str(x).lower() else '')
@@ -927,9 +942,9 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V31·精准归因聚合版.xlsx】",
+        label="📥 下载完整【V32·重构级精确算力版.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V31_精准归因补货分析_{timestamp_str}.xlsx",
+        file_name=f"V32_精准测算补货大盘_{timestamp_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
