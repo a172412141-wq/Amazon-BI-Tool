@@ -23,7 +23,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.title("🚀 亚马逊智能补货与全息分析中台")
 
-# ================= 2. 列名智能映射引擎 =================
+# ================= 2. 列名智能映射引擎（增强版） =================
 COLUMN_RULES = {
     'MSKU': {'exact': ['MSKU', '商家SKU', 'Merchant SKU'], 'fuzzy': ['msku'], 'exclude': ['FNSKU']},
     'SKU': {'exact': ['SKU', 'FNSKU', '子SKU'], 'fuzzy': ['sku'], 'exclude': ['MSKU']},
@@ -49,12 +49,16 @@ def smart_find_column(df, key):
     return None
 
 def find_col(df, exacts, fuzzys=None):
-    if fuzzys is None: fuzzys = []
+    """增强版列名查找：支持多语言变体"""
+    if fuzzys is None:
+        fuzzys = []
+    # 精确匹配优先
     for kw in exacts:
         for c in df.columns:
             if kw.lower() == str(c).lower():
                 return c
-    for kw in fuzzys:
+    # 模糊匹配（忽略大小写）
+    for kw in fuzzys + exacts:  # exacts 也纳入模糊搜索以覆盖大小写变体
         for c in df.columns:
             if kw.lower() in str(c).lower():
                 return c
@@ -71,7 +75,11 @@ def deduplicate_uploaded_files(files):
 
 @st.cache_data
 def clean_msku_strict(val):
-    return "" if pd.isna(val) else re.sub(r'\s+', '', str(val).strip())
+    """严格清理 MSKU/SKU：去除所有空白和不可见字符"""
+    if pd.isna(val):
+        return ""
+    # 移除所有空白字符（包括空格、制表符、换行等）以及 ASCII 控制字符
+    return re.sub(r'[\s\x00-\x1f\x7f]', '', str(val).strip())
 
 def to_numeric_fast(series):
     s = series.astype(str).str.strip().replace(['-', 'nan', 'NaN', 'None', ''], '0')
@@ -108,19 +116,19 @@ def process_traffic_cached(file_data_list, prefix):
             file_obj = io.BytesIO(file_bytes)
             file_obj.name = fname
             df = clean_columns(read_file(file_obj).drop_duplicates())
-            sku_col = find_col(df, ['SKU', '子ASIN'], ['(Child)'])
+            sku_col = find_col(df, ['SKU', '子ASIN', '子 SKU'], ['(Child)', 'sku'])
             if not sku_col:
                 continue
             df['join_key'] = df[sku_col].apply(clean_msku_strict)
             shop_col = find_col(df, ['店铺', 'Shop', 'Store', 'Account', '账号'], ['店铺', 'Shop', 'Store'])
             df['traffic_shop'] = df[shop_col].astype(str).str.strip() if shop_col else 'Unknown'
 
-            # 修复广告数据缺失：放宽排除词，不再排除含"广告"的列
+            # 放宽的流量指标识别
             indicators = [
-                (["会话数", "Sessions"], ["会话", "session"], ["占比", "转化"], "会话数"),
-                (["页面浏览量", "Views"], ["页面浏览", "view"], ["占比", "转化"], "页面浏览量"),
-                (["订单商品总数", "Units Ordered"], ["订单商品"], ["转化"], "订单商品总数"),
-                (["销售额", "Product Sales"], [], ["转化"], "销售额")
+                (["会话数", "Sessions", "浏览会话"], ["会话", "session"], ["占比", "转化"], "会话数"),
+                (["页面浏览量", "Views", "页面浏览"], ["页面浏览", "view"], ["占比", "转化"], "页面浏览量"),
+                (["订单商品总数", "Units Ordered", "订购数量"], ["订单商品", "units"], ["转化"], "订单商品总数"),
+                (["销售额", "Product Sales", "销售总额"], ["销售"], ["转化"], "销售额")
             ]
             found = {}
             for exacts, fuzzys, excls, suffix in indicators:
@@ -306,7 +314,7 @@ if run_btn:
             if df_wl is not None:
                 if '店铺' in df_wl.columns and '店铺' in df_master.columns:
                     def normalize_shop(s):
-                        return str(s).upper().replace(" ", "")
+                        return str(s).upper().replace(" ", "").replace("AMAZON", "").strip()
                     df_master['_shop_norm'] = df_master['店铺'].apply(normalize_shop)
                     df_wl['_shop_norm'] = df_wl['店铺'].apply(normalize_shop)
                     merged = pd.merge(df_master, df_wl[['MSKU', '_shop_norm']], on='MSKU', how='inner')
@@ -318,25 +326,29 @@ if run_btn:
                 st.error("❌ 白名单过滤后无数据！")
                 st.stop()
 
-            # 统一数值列
-            for std, (exacts, fuzzys) in {
-                '7天销售额': (['7天销售额', '销售额(7天)'], ['7 days sales']),
-                '14天销售额': (['14天销售额', '销售额(14天)'], ['14 days sales']),
-                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)'], ['7天销量']),
-                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)'], ['14天销量']),
-                '广告花费': (['广告花费'], ['ad spend', 'spend (ad)']),
-                '广告销售额': (['广告销售额'], ['ad sales']),
-                '广告订单': (['广告订单量', '广告订单'], ['ad orders']),
-                '广告点击数': (['广告点击数', '广告点击'], ['ad clicks']),
-                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光'], ['ad impressions']),
-                '订单毛利润': (['订单毛利润', '毛利润', '毛利额'], ['profit'])
-            }.items():
+            # ========== 统一数值列（增强广告列映射） ==========
+            standard_columns = {
+                '7天销售额': (['7天销售额', '销售额(7天)', '7 days sales', '7天销售'], ['7天销售']),
+                '14天销售额': (['14天销售额', '销售额(14天)', '14 days sales', '14天销售'], ['14天销售']),
+                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)', '7天销量'], ['7天销量', 'units ordered 7d']),
+                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)', '14天销量'], ['14天销量']),
+                '广告花费': (['广告花费', 'Spend', 'Ad Spend', '花费', '广告支出', '广告花费(USD)'], ['ad spend', 'spend']),
+                '广告销售额': (['广告销售额', 'Ad Sales', '广告销售', 'Attributed Sales', '广告销售额(USD)'], ['ad sales', 'attributed sales']),
+                '广告订单': (['广告订单量', '广告订单', 'Ad Orders', 'Orders'], ['ad orders']),
+                '广告点击数': (['广告点击数', '广告点击', 'Ad Clicks', 'Clicks'], ['ad clicks']),
+                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光', 'Impressions'], ['ad impressions']),
+                '订单毛利润': (['订单毛利润', '毛利润', '毛利额', 'Gross Profit'], ['profit', 'gross'])
+            }
+
+            for std, (exacts, fuzzys) in standard_columns.items():
                 found = find_col(df_master, exacts, fuzzys)
                 if found and found != std:
                     df_master.rename(columns={found: std}, inplace=True)
                 elif not found:
                     df_master[std] = 0.0
-                df_master[std] = to_numeric_fast(df_master[std])
+                # 确保转换为数值
+                if std in df_master.columns:
+                    df_master[std] = to_numeric_fast(df_master[std])
 
             # 调用缓存处理流量、库存、库龄
             df_7 = process_traffic_cached(f_7d_data, "7天")
@@ -344,7 +356,14 @@ if run_btn:
             df_inventory = process_inventory_cached(f_inv_data)
             df_age = process_age_cached(f_age_data)
 
-            # 向量化合并流量表
+            # 调试输出（可选，验证流量数据是否被正确加载）
+            if st.secrets.get("debug_mode", False):
+                if df_7 is not None:
+                    st.write("7天流量表样例", df_7.head(3))
+                if df_14 is not None:
+                    st.write("14天流量表样例", df_14.head(3))
+
+            # 向量化合并流量表（修正店铺匹配过于严格的问题）
             def merge_traffic_vectorized(m_df, t_df):
                 if t_df is None or t_df.empty:
                     return m_df
@@ -353,9 +372,11 @@ if run_btn:
                     return m_df
                 merged = pd.merge(m_df, t_df[['join_key', 'traffic_shop'] + t_new_cols],
                                   left_on='MSKU', right_on='join_key', how='left')
-                mask_mismatch = (merged['traffic_shop'].fillna('').str.upper().str.replace(' ', '') !=
-                                 merged['店铺'].fillna('').str.upper().str.replace(' ', ''))
-                merged.loc[mask_mismatch, t_new_cols] = 0
+                # 移除严格的店铺匹配清零逻辑，改为保留所有数据，因为店铺列在主表中可能已规范化
+                # 原始代码中的 mask_mismatch 会将不匹配店铺的数据清零，注释掉以避免数据丢失
+                # mask_mismatch = (merged['traffic_shop'].fillna('').str.upper().str.replace(' ', '') !=
+                #                  merged['店铺'].fillna('').str.upper().str.replace(' ', ''))
+                # merged.loc[mask_mismatch, t_new_cols] = 0
                 return merged.drop(columns=['join_key', 'traffic_shop'], errors='ignore')
 
             merged = df_master.copy()
