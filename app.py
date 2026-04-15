@@ -112,15 +112,18 @@ def process_traffic_data(files, prefix):
             if shop_col: df['traffic_shop'] = df[shop_col].astype(str).str.strip()
             else: df['traffic_shop'] = 'Unknown'
                 
+            # 🌟 修复区 1：多维精准锁定，彻底排除带有“广告”字眼的干扰列
             indicators = [
-                ("会话", None, "会话数"), ("页面浏览", None, "页面浏览量"),
-                ("订单商品", "B2B", "订单商品总数"), ("销售额", "B2B", "销售额")
+                (["会话", "Sessions"], ["广告", "Ad", "B2B"], "会话数"), 
+                (["页面浏览", "Views"], ["广告", "Ad", "B2B"], "页面浏览量"),
+                (["订单商品", "Units Ordered"], ["B2B", "广告", "Ad"], "订单商品总数"), 
+                (["销售额", "Product Sales"], ["B2B", "广告", "Ad"], "销售额")
             ]
             found_data = {}
-            for keyword, exclude, suffix in indicators:
+            for keywords, excludes, suffix in indicators:
                 for col in df.columns:
-                    if keyword in col:
-                        if exclude and exclude in col: continue
+                    if any(kw.lower() in col.lower() for kw in keywords):
+                        if any(ex.lower() in col.lower() for ex in excludes): continue
                         df[col] = df[col].apply(lambda x: clean_percentage_or_money(x, col))
                         found_data[col] = f"{prefix}{suffix}"
                         break
@@ -347,23 +350,28 @@ if run_btn:
                 if isinstance(traffic_df, pd.Series): traffic_df = traffic_df.to_frame()
                 master_df = master_df.loc[:, ~master_df.columns.duplicated()]
                 traffic_df = traffic_df.loc[:, ~traffic_df.columns.duplicated()]
-                temp = pd.merge(master_df, traffic_df, left_on='MSKU', right_on='join_key', how='left', suffixes=('', '_tr'))
+                
+                # 🌟 修复区 2：强制踢除重名老列，无情覆盖亚马逊最新数据
+                traffic_data_cols = [c for c in traffic_df.columns if c not in ['join_key', 'traffic_shop']]
+                overlap = [c for c in traffic_data_cols if c in master_df.columns]
+                if overlap:
+                    master_df = master_df.drop(columns=overlap)
+                
+                temp = pd.merge(master_df, traffic_df, left_on='MSKU', right_on='join_key', how='left')
                 if '店铺' in temp.columns and 'traffic_shop' in temp.columns:
                     def is_match(row):
                         m_shop = str(row['店铺']).upper().replace(" ", "")
                         t_shop = str(row['traffic_shop']).upper().replace(" ", "")
                         if t_shop == 'UNKNOWN' or t_shop == 'NAN': return True 
                         return (t_shop in m_shop) or (m_shop in t_shop)
-                    traffic_cols = [c for c in traffic_df.columns if c not in ['join_key', 'traffic_shop']]
                     for idx, row in temp.iterrows():
                         if not is_match(row):
-                            for col in traffic_cols:
+                            for col in traffic_data_cols:
                                 if col in temp.columns: temp.at[idx, col] = 0
                 if 'join_key' in temp.columns: del temp['join_key']
                 if 'traffic_shop' in temp.columns: del temp['traffic_shop']
-                group_keys = [c for c in master_df.columns]
-                traffic_cols = [c for c in traffic_df.columns if c not in ['join_key', 'traffic_shop']]
-                temp = temp.groupby(group_keys, dropna=False)[traffic_cols].sum().reset_index()
+                group_keys = [c for c in master_df.columns if c not in traffic_data_cols]
+                temp = temp.groupby(group_keys, dropna=False)[traffic_data_cols].sum().reset_index()
                 return temp
 
             merged = df_master.copy()
@@ -682,7 +690,6 @@ if "df_vis" in st.session_state:
     
     st.markdown("---")
     
-    # 🌟 核心优化：排版升级为四列，加入店铺级联
     col_t1, col_t2, col_t3, col_t4 = st.columns([0.8, 1.2, 1.2, 1.2])
     with col_t1:
         st.markdown("##### ⏱️ 分析周期")
@@ -703,7 +710,6 @@ if "df_vis" in st.session_state:
             selected_stores = []
             st.warning("⚠️ 未找到店铺列")
 
-    # 店铺过滤逻辑
     if selected_stores:
         def has_selected_store(row_store_str):
             for s in selected_stores:
@@ -917,9 +923,6 @@ if "df_vis" in st.session_state:
     st.markdown("---")
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M')
     st.download_button(
-        label="📥 下载完整【V29·三级智能穿透大盘.xlsx】",
+        label="📥 下载完整【V30·双重排雷及最新全聚合版.xlsx】",
         data=st.session_state.processed_excel,
-        file_name=f"V29_多店聚合补货分析_{timestamp_str}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
+        file_name=f"V30_多店聚合补货分析_{timestamp_str}.
