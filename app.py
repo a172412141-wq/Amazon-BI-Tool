@@ -317,33 +317,13 @@ if run_btn:
                 st.error("❌ 白名单过滤后无数据！")
                 st.stop()
 
-            # 统一数值列
-            for std, (exacts, fuzzys) in {
-                '7天销售额': (['7天销售额', '销售额(7天)'], ['7 days sales']),
-                '14天销售额': (['14天销售额', '销售额(14天)'], ['14 days sales']),
-                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)'], ['7天销量']),
-                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)'], ['14天销量']),
-                '广告花费': (['广告花费'], ['ad spend', 'spend (ad)']),
-                '广告销售额': (['广告销售额'], ['ad sales']),
-                '广告订单': (['广告订单量', '广告订单'], ['ad orders']),
-                '广告点击数': (['广告点击数', '广告点击'], ['ad clicks']),
-                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光'], ['ad impressions']),
-                '订单毛利润': (['订单毛利润', '毛利润', '毛利额'], ['profit'])
-            }.items():
-                found = find_col(df_master, exacts, fuzzys)
-                if found and found != std:
-                    df_master.rename(columns={found: std}, inplace=True)
-                elif not found:
-                    df_master[std] = 0.0
-                df_master[std] = to_numeric_fast(df_master[std])
-
-            # 调用缓存处理流量、库存、库龄
+           # 1. 调用缓存处理流量、库存、库龄
             df_7 = process_traffic_cached(f_7d_data, "7天")
             df_14 = process_traffic_cached(f_14d_data, "14天")
             df_inventory = process_inventory_cached(f_inv_data)
             df_age = process_age_cached(f_age_data)
 
-            # 向量化合并流量表
+            # 2. 向量化合并流量表
             def merge_traffic_vectorized(m_df, t_df):
                 if t_df is None or t_df.empty:
                     return m_df
@@ -360,6 +340,26 @@ if run_btn:
             merged = df_master.copy()
             merged = merge_traffic_vectorized(merged, df_7)
             merged = merge_traffic_vectorized(merged, df_14)
+
+            # 3. 统一数值列（移到流量合并之后，并扩充广告词库）
+            for std, (exacts, fuzzys) in {
+                '7天销售额': (['7天销售额', '销售额(7天)', '7天销售'], ['7 days sales', '7-day sales']),
+                '14天销售额': (['14天销售额', '销售额(14天)', '14天销售'], ['14 days sales', '14-day sales']),
+                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)', '7天销量'], ['7天销量', '7 day orders']),
+                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)', '14天销量'], ['14天销量', '14 day orders']),
+                '广告花费': (['广告花费', 'Spend', '总花费', '花费'], ['ad spend', 'spend']),
+                '广告销售额': (['广告销售额', '7 Day Total Sales', '7天的总销售额', '7天总销售额', '广告销售'], ['ad sales', 'sales']),
+                '广告订单': (['广告订单量', '广告订单', '7 Day Total Orders (#)', '7天的总订单数', '7天总订单数', '广告销量'], ['ad orders', 'orders']),
+                '广告点击数': (['广告点击数', '广告点击', 'Clicks', '点击量'], ['ad clicks', 'clicks']),
+                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光', 'Impressions', '展示量'], ['ad impressions', 'impressions']),
+                '订单毛利润': (['订单毛利润', '毛利润', '毛利额'], ['profit'])
+            }.items():
+                found = find_col(merged, exacts, fuzzys)
+                if found and found != std:
+                    merged.rename(columns={found: std}, inplace=True)
+                elif not found:
+                    merged[std] = 0.0
+                merged[std] = to_numeric_fast(merged[std])
 
             # 聚合多店铺同一MSKU
             num_cols = merged.select_dtypes(include=np.number).columns.tolist()
