@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import io
 import re
-import os
 from datetime import datetime
 import plotly.express as px
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -38,6 +37,7 @@ def deduplicate_uploaded_files(files):
 def clean_msku_strict(val):
     return "" if pd.isna(val) else re.sub(r'\s+', '', str(val).strip())
 
+# ⚡️ 核心提速与防错：强制正则提取纯数字
 def to_numeric_fast(series):
     s = series.astype(str).str.strip().replace(['-', 'nan', 'NaN', 'None', ''], '0')
     has_pct = s.str.contains('%', na=False)
@@ -67,7 +67,7 @@ def read_file(f):
         except: return pd.read_csv(f, encoding='gbk')
     return pd.read_excel(f)
 
-# 流量表与库存表解析
+# 流量表解析
 def process_traffic(files, prefix):
     if not files: return None
     all_dfs = []
@@ -194,7 +194,7 @@ if run_btn:
         if unrec: st.warning(f"⚠️ 已忽略未按规范命名的文件：{', '.join(unrec)}")
         if not f_prod: st.error("❌ 严重错误：未识别到【产品表现表】！"); st.stop()
 
-        with st.spinner("🧠 正在执行全息容错防弹运算引擎，请稍候..."):
+        with st.spinner("🧠 正在执行全息穿透洗数引擎，请稍候..."):
             df_wl, all_data_dfs = None, []
             for f in f_prod:
                 df = clean_columns(read_file(f).drop_duplicates())
@@ -251,7 +251,6 @@ if run_btn:
                 if t_df is None or t_df.empty: return m_df
                 m_df, t_df = m_df.loc[:, ~m_df.columns.duplicated()], t_df.loc[:, ~t_df.columns.duplicated()]
                 t_cols = [c for c in t_df.columns if c not in ['join_key', 'traffic_shop']]
-                # 防重血统拦截
                 overlap = [c for c in t_cols if c in m_df.columns]
                 if overlap:
                     t_df = t_df.drop(columns=overlap)
@@ -267,7 +266,9 @@ if run_btn:
                                 if col in temp.columns: temp.at[idx, col] = 0
                 return temp.drop(columns=['join_key', 'traffic_shop'], errors='ignore').groupby([c for c in m_df.columns if c not in t_cols], dropna=False)[t_cols].sum().reset_index()
 
-            merged = merge_traffic(merge_traffic(df_master.copy(), df_7), df_14).loc[:, ~merged.columns.duplicated()]
+            # 🌟 V37: 修复 NameError 作用域漏洞，分两行写 
+            merged = merge_traffic(merge_traffic(df_master.copy(), df_7), df_14)
+            merged = merged.loc[:, ~merged.columns.duplicated()]
 
             # 多店铺预聚合
             agg_d = {}
@@ -285,22 +286,21 @@ if run_btn:
                     merged = pd.merge(merged, df_t, left_on='SKU_KEY', right_on='join_key', how='left').drop(columns=['join_key'], errors='ignore')
             merged = merged.loc[:, ~merged.columns.duplicated()].fillna(0)
 
-            # 🌟 防弹容错算力区 (安全取值，应对漏传表格)
-            def safe_div(n, d): return np.where(merged.get(d, 0) > 0, merged.get(n, 0) / merged.get(d, 1), 0)
+            # 🌟 容错算力防线 (完全防弹)
+            def _s_div(n, d): return np.where(merged.get(d, 0) > 0, merged.get(n, 0) / merged.get(d, 1), 0)
             
-            merged['ACOS'] = safe_div('广告花费', '广告销售额')
-            merged['CPC'] = safe_div('广告花费', '广告点击数')
-            merged['ACoAS'] = safe_div('广告花费', '7天销售额')
-            merged['广告CVR'] = safe_div('广告订单', '广告点击数')
-            merged['CTR'] = safe_div('广告点击数', '广告曝光量')
-            merged['订单毛利率'] = safe_div('订单毛利润', '7天销售额')
+            merged['ACOS'] = _s_div('广告花费', '广告销售额')
+            merged['CPC'] = _s_div('广告花费', '广告点击数')
+            merged['ACoAS'] = _s_div('广告花费', '7天销售额')
+            merged['广告CVR'] = _s_div('广告订单', '广告点击数')
+            merged['CTR'] = _s_div('广告点击数', '广告曝光量')
+            merged['订单毛利率'] = _s_div('订单毛利润', '7天销售额')
 
             merged['商品属性'] = merged['MSKU'].apply(lambda x: '二手商品' if 'amzn.gr' in str(x).lower() else '')
-            
             merged['7天日均订单'] = merged.get('7天订单商品总数', 0) / 7
             merged['14天日均订单'] = merged.get('14天订单商品总数', 0) / 14
-            merged['7天销售转化率'] = safe_div('7天订单商品总数', '7天会话数')
-            merged['14天销售转化率'] = safe_div('14天订单商品总数', '14天会话数')
+            merged['7天销售转化率'] = _s_div('7天订单商品总数', '7天会话数')
+            merged['14天销售转化率'] = _s_div('14天订单商品总数', '14天会话数')
 
             inv_c = [c for c in ['待发货', '7天内送达', '14天内送达', '21天内送达', '28天内送达', '28天以上送达'] if c in merged.columns]
             merged['待到合计'] = merged[inv_c].sum(axis=1) if inv_c else 0
@@ -309,7 +309,6 @@ if run_btn:
             s_agg = merged.groupby('MSKU').agg({'预测日销量': 'sum'}).rename(columns={'预测日销量': 'SKU_总日均'})
             merged = pd.merge(merged, s_agg, on='MSKU', how='left')
             
-            # 🌟 这里是之前报错的核心：加入了 .get() 防弹壳
             merged['理论需求量'] = merged['SKU_总日均'] * TARGET_DAYS_TOTAL
             merged['总供给'] = merged.get('可用量', 0) + merged.get('待到合计', 0)
             merged['建议补货量'] = np.maximum(0, merged['理论需求量'] - merged['总供给'])
@@ -327,7 +326,7 @@ if run_btn:
             merged['理论需求量'] = merged['预测日销量'] * TARGET_DAYS_TOTAL
             merged.drop(columns=['SKU_总日均', 'SKU_KEY'], errors='ignore', inplace=True)
 
-            # 列排序
+            # 列排序与生成
             mv_front = [c for c in ['预测日销量', '建议补货量', '预计可售天数', '理论需求量', '总供给'] if c in merged.columns]
             others = [c for c in merged.columns if c not in mv_front]
             cols = others[:12] + mv_front + others[12:]
@@ -345,7 +344,7 @@ if run_btn:
 
             merged = merged[cols]
 
-            # Excel 渲染引擎
+            # Excel 高定排版引擎压缩版
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 merged.to_excel(writer, index=False, sheet_name='补货数据')
@@ -416,7 +415,7 @@ if run_btn:
         st.session_state.processed_excel = output.getvalue()
         st.session_state.df_vis = merged
 
-# ================= 5. 大屏展示 =================
+# ================= 5. 大屏全息穿透筛选与展示 =================
 if "df_vis" in st.session_state:
     df_vis = st.session_state.df_vis.loc[:, ~st.session_state.df_vis.columns.duplicated()].copy()
     st.markdown("---")
@@ -552,4 +551,4 @@ if "df_vis" in st.session_state:
                     st.plotly_chart(fg2, use_container_width=True)
 
     st.markdown("---")
-    st.download_button(label="📥 下载完整【V36·防弹容错护盾版.xlsx】", data=st.session_state.processed_excel, file_name=f"V36_容错防弹大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    st.download_button(label="📥 下载完整【V37·极速安全防御版.xlsx】", data=st.session_state.processed_excel, file_name=f"V37_极速安全大盘_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
