@@ -19,11 +19,12 @@ st.markdown("""
     div[data-testid="stMetricValue"] { font-size: 1.5rem !important; font-weight: 800; color: #1E88E5; }
     div[data-testid="stMetricLabel"] { font-size: 0.9rem !important; font-weight: bold; margin-bottom: -5px; }
     .sop-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ffc107; font-size: 0.9em; color: #333;}
+    .debug-box { background-color: #fff3cd; padding: 10px; border-radius: 5px; border-left: 5px solid #ffc107; font-size: 0.8em; }
     </style>
 """, unsafe_allow_html=True)
 st.title("🚀 亚马逊智能补货与全息分析中台")
 
-# ================= 2. 列名智能映射引擎（增强版） =================
+# ================= 2. 列名智能映射引擎（强化版） =================
 COLUMN_RULES = {
     'MSKU': {'exact': ['MSKU', '商家SKU', 'Merchant SKU'], 'fuzzy': ['msku'], 'exclude': ['FNSKU']},
     'SKU': {'exact': ['SKU', 'FNSKU', '子SKU'], 'fuzzy': ['sku'], 'exclude': ['MSKU']},
@@ -49,16 +50,16 @@ def smart_find_column(df, key):
     return None
 
 def find_col(df, exacts, fuzzys=None):
-    """增强版列名查找：支持多语言变体"""
+    """加强版查找：返回第一个匹配的列名"""
     if fuzzys is None:
         fuzzys = []
-    # 精确匹配优先
+    # 精确匹配
     for kw in exacts:
         for c in df.columns:
             if kw.lower() == str(c).lower():
                 return c
-    # 模糊匹配（忽略大小写）
-    for kw in fuzzys + exacts:  # exacts 也纳入模糊搜索以覆盖大小写变体
+    # 模糊匹配（包含关系）
+    for kw in fuzzys + exacts:
         for c in df.columns:
             if kw.lower() in str(c).lower():
                 return c
@@ -75,11 +76,13 @@ def deduplicate_uploaded_files(files):
 
 @st.cache_data
 def clean_msku_strict(val):
-    """严格清理 MSKU/SKU：去除所有空白和不可见字符"""
+    """彻底清洗：移除空格、换行、制表符、零宽字符等"""
     if pd.isna(val):
         return ""
-    # 移除所有空白字符（包括空格、制表符、换行等）以及 ASCII 控制字符
-    return re.sub(r'[\s\x00-\x1f\x7f]', '', str(val).strip())
+    s = str(val).strip()
+    # 移除所有空白字符（包括 Unicode 空白）及控制字符
+    s = re.sub(r'[\s\u200b\u200c\u200d\uFEFF\x00-\x1f\x7f]', '', s)
+    return s
 
 def to_numeric_fast(series):
     s = series.astype(str).str.strip().replace(['-', 'nan', 'NaN', 'None', ''], '0')
@@ -109,15 +112,17 @@ def get_file_bytes(file_obj):
     return file_obj.read()
 
 @st.cache_data(show_spinner=False)
-def process_traffic_cached(file_data_list, prefix):
+def process_traffic_cached(file_data_list, prefix, debug=False):
     all_dfs = []
     for file_bytes, fname in file_data_list:
         try:
             file_obj = io.BytesIO(file_bytes)
             file_obj.name = fname
             df = clean_columns(read_file(file_obj).drop_duplicates())
-            sku_col = find_col(df, ['SKU', '子ASIN', '子 SKU'], ['(Child)', 'sku'])
+            sku_col = find_col(df, ['SKU', '子ASIN', '子 SKU', 'SKU (Child)'], ['sku', 'asin'])
             if not sku_col:
+                if debug:
+                    st.warning(f"⚠️ 流量文件 {fname} 缺少 SKU 列，实际列名: {list(df.columns)}")
                 continue
             df['join_key'] = df[sku_col].apply(clean_msku_strict)
             shop_col = find_col(df, ['店铺', 'Shop', 'Store', 'Account', '账号'], ['店铺', 'Shop', 'Store'])
@@ -125,10 +130,10 @@ def process_traffic_cached(file_data_list, prefix):
 
             # 放宽的流量指标识别
             indicators = [
-                (["会话数", "Sessions", "浏览会话"], ["会话", "session"], ["占比", "转化"], "会话数"),
-                (["页面浏览量", "Views", "页面浏览"], ["页面浏览", "view"], ["占比", "转化"], "页面浏览量"),
-                (["订单商品总数", "Units Ordered", "订购数量"], ["订单商品", "units"], ["转化"], "订单商品总数"),
-                (["销售额", "Product Sales", "销售总额"], ["销售"], ["转化"], "销售额")
+                (["会话数", "Sessions", "浏览会话", "Session"], ["会话", "session"], ["占比", "转化"], "会话数"),
+                (["页面浏览量", "Views", "页面浏览", "Page Views"], ["页面浏览", "view"], ["占比", "转化"], "页面浏览量"),
+                (["订单商品总数", "Units Ordered", "订购数量", "Units"], ["订单商品", "units"], ["转化"], "订单商品总数"),
+                (["销售额", "Product Sales", "销售总额", "Sales"], ["销售"], ["转化"], "销售额")
             ]
             found = {}
             for exacts, fuzzys, excls, suffix in indicators:
@@ -136,6 +141,8 @@ def process_traffic_cached(file_data_list, prefix):
                 if c_found and not any(ex.lower() in c_found.lower() for ex in excls):
                     df[c_found] = to_numeric_fast(df[c_found])
                     found[c_found] = f"{prefix}{suffix}"
+                elif debug:
+                    st.info(f"流量文件 {fname} 未找到 {suffix} 对应列 (候选: {exacts})")
 
             if not found:
                 continue
@@ -240,6 +247,10 @@ with st.sidebar:
     TARGET_DAYS_STOCK = st.number_input("库存目标天数", value=30)
     TARGET_DAYS_TOTAL = TARGET_DAYS_TRANSIT + TARGET_DAYS_STOCK
     ALERT_STOCKOUT_DAYS = st.number_input("断货红线 (预警)", value=15)
+    
+    # 调试模式开关
+    debug_mode = st.checkbox("🐞 调试模式 (显示数据诊断信息)", value=True)
+    
     run_btn = st.button("🚀 开始全息穿透分析", type="primary", use_container_width=True)
 
 # ================= 6. 主运算逻辑 =================
@@ -280,6 +291,10 @@ if run_btn:
             df_wl, all_data_dfs = None, []
             for f in f_prod:
                 df = clean_columns(read_file(f).drop_duplicates())
+                if debug_mode:
+                    with st.expander(f"📄 产品表列名: {f.name}", expanded=False):
+                        st.write(list(df.columns))
+                
                 if "重要" in f.name or "白名单" in f.name:
                     c_msku = smart_find_column(df, 'MSKU') or find_col(df, ['MSKU', '商家SKU'], ['sku'])
                     if c_msku:
@@ -326,57 +341,63 @@ if run_btn:
                 st.error("❌ 白名单过滤后无数据！")
                 st.stop()
 
-            # ========== 统一数值列（增强广告列映射） ==========
+            # ========== 统一数值列（强化广告列映射） ==========
             standard_columns = {
-                '7天销售额': (['7天销售额', '销售额(7天)', '7 days sales', '7天销售'], ['7天销售']),
-                '14天销售额': (['14天销售额', '销售额(14天)', '14 days sales', '14天销售'], ['14天销售']),
-                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)', '7天销量'], ['7天销量', 'units ordered 7d']),
-                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)', '14天销量'], ['14天销量']),
-                '广告花费': (['广告花费', 'Spend', 'Ad Spend', '花费', '广告支出', '广告花费(USD)'], ['ad spend', 'spend']),
-                '广告销售额': (['广告销售额', 'Ad Sales', '广告销售', 'Attributed Sales', '广告销售额(USD)'], ['ad sales', 'attributed sales']),
-                '广告订单': (['广告订单量', '广告订单', 'Ad Orders', 'Orders'], ['ad orders']),
+                '7天销售额': (['7天销售额', '销售额(7天)', '7 days sales', '7天销售', 'Sales 7d'], ['7天销售']),
+                '14天销售额': (['14天销售额', '销售额(14天)', '14 days sales', '14天销售', 'Sales 14d'], ['14天销售']),
+                '7天订单商品总数': (['7天订单商品总数', '7天订单', '订单(7天)', '7天销量', 'Units 7d'], ['7天销量']),
+                '14天订单商品总数': (['14天订单商品总数', '14天订单', '订单(14天)', '14天销量', 'Units 14d'], ['14天销量']),
+                '广告花费': (['广告花费', 'Spend', 'Ad Spend', '花费', '广告支出', '广告花费(USD)', 'Cost'], ['ad spend', 'spend']),
+                '广告销售额': (['广告销售额', 'Ad Sales', '广告销售', 'Attributed Sales', '广告销售额(USD)', 'Sales Ad'], ['ad sales', 'attributed sales']),
+                '广告订单': (['广告订单量', '广告订单', 'Ad Orders', 'Orders Ad'], ['ad orders']),
                 '广告点击数': (['广告点击数', '广告点击', 'Ad Clicks', 'Clicks'], ['ad clicks']),
-                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光', 'Impressions'], ['ad impressions']),
-                '订单毛利润': (['订单毛利润', '毛利润', '毛利额', 'Gross Profit'], ['profit', 'gross'])
+                '广告曝光量': (['广告曝光量', '广告展示量', '广告展示', '广告曝光', 'Impressions', 'Impr'], ['ad impressions']),
+                '订单毛利润': (['订单毛利润', '毛利润', '毛利额', 'Gross Profit', 'Profit'], ['profit', 'gross'])
             }
 
+            missing_std = []
             for std, (exacts, fuzzys) in standard_columns.items():
                 found = find_col(df_master, exacts, fuzzys)
                 if found and found != std:
                     df_master.rename(columns={found: std}, inplace=True)
+                    if debug_mode:
+                        st.success(f"✅ 映射广告列: {found} -> {std}")
                 elif not found:
                     df_master[std] = 0.0
-                # 确保转换为数值
+                    missing_std.append(std)
                 if std in df_master.columns:
                     df_master[std] = to_numeric_fast(df_master[std])
+            
+            if debug_mode and missing_std:
+                st.warning(f"⚠️ 未找到以下广告/销售列，已填充0: {missing_std}")
 
             # 调用缓存处理流量、库存、库龄
-            df_7 = process_traffic_cached(f_7d_data, "7天")
-            df_14 = process_traffic_cached(f_14d_data, "14天")
+            df_7 = process_traffic_cached(f_7d_data, "7天", debug=debug_mode)
+            df_14 = process_traffic_cached(f_14d_data, "14天", debug=debug_mode)
             df_inventory = process_inventory_cached(f_inv_data)
             df_age = process_age_cached(f_age_data)
 
-            # 调试输出（可选，验证流量数据是否被正确加载）
-            if st.secrets.get("debug_mode", False):
-                if df_7 is not None:
-                    st.write("7天流量表样例", df_7.head(3))
-                if df_14 is not None:
-                    st.write("14天流量表样例", df_14.head(3))
+            if debug_mode:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("🔍 主表 MSKU 样例", df_master[['MSKU', 'SKU_KEY']].head(3))
+                with col2:
+                    if df_7 is not None:
+                        st.write("🔍 7天流量表 join_key 样例", df_7[['join_key']].head(3))
+                    else:
+                        st.warning("7天流量表为空")
 
-            # 向量化合并流量表（修正店铺匹配过于严格的问题）
+            # 向量化合并流量表（移除店铺匹配清零）
             def merge_traffic_vectorized(m_df, t_df):
                 if t_df is None or t_df.empty:
                     return m_df
                 t_new_cols = [c for c in t_df.columns if c not in m_df.columns and c not in ['join_key', 'traffic_shop']]
                 if not t_new_cols:
                     return m_df
+                # 左连接
                 merged = pd.merge(m_df, t_df[['join_key', 'traffic_shop'] + t_new_cols],
                                   left_on='MSKU', right_on='join_key', how='left')
-                # 移除严格的店铺匹配清零逻辑，改为保留所有数据，因为店铺列在主表中可能已规范化
-                # 原始代码中的 mask_mismatch 会将不匹配店铺的数据清零，注释掉以避免数据丢失
-                # mask_mismatch = (merged['traffic_shop'].fillna('').str.upper().str.replace(' ', '') !=
-                #                  merged['店铺'].fillna('').str.upper().str.replace(' ', ''))
-                # merged.loc[mask_mismatch, t_new_cols] = 0
+                # 不再清零，保留所有数据
                 return merged.drop(columns=['join_key', 'traffic_shop'], errors='ignore')
 
             merged = df_master.copy()
@@ -400,6 +421,12 @@ if run_btn:
 
             merged_agg = merged_agg.fillna(0)
 
+            # 检查广告列是否存在非零值（调试）
+            if debug_mode:
+                if '广告花费' in merged_agg.columns:
+                    total_ad_spend = merged_agg['广告花费'].sum()
+                    st.info(f"💰 合并后广告花费总和: {total_ad_spend:,.2f}")
+
             # 计算指标
             merged_agg['商品属性'] = merged_agg['MSKU'].apply(lambda x: '二手商品' if 'amzn.gr' in str(x).lower() else '')
             merged_agg['7天日均订单'] = merged_agg.get('7天订单商品总数', 0) / 7
@@ -412,7 +439,7 @@ if run_btn:
             # 预测日销量与SKU层级需求
             merged_agg['预测日销量'] = (merged_agg['7天日均订单'] + merged_agg['14天日均订单']) / 2
             merged_agg['SKU_总日均'] = merged_agg.groupby('MSKU')['预测日销量'].transform('sum')
-            merged_agg['SKU_总供给'] = merged_agg['总供给']  # 已按MSKU唯一
+            merged_agg['SKU_总供给'] = merged_agg['总供给']
 
             merged_agg['理论需求量'] = merged_agg['SKU_总日均'] * TARGET_DAYS_TOTAL
             merged_agg['建议补货量'] = np.maximum(0, merged_agg['理论需求量'] - merged_agg['SKU_总供给'])
@@ -432,7 +459,7 @@ if run_btn:
 
             merged_agg.drop(columns=['SKU_KEY'], errors='ignore', inplace=True)
 
-            # 展示层去重：创建副本，不污染原始数据
+            # 展示层去重
             df_display = merged_agg.sort_values(by=['MSKU', '7天销售额'], ascending=[True, False]).reset_index(drop=True)
             is_dup = df_display.duplicated(subset=['MSKU'], keep='first')
             clr_cols = ['可用量', '待发货', '7天内送达', '14天内送达', '21天内送达', '28天内送达', '28天以上送达',
@@ -464,7 +491,7 @@ if run_btn:
                 cols = move_col(cols, a, b, p)
             merged_final = df_display[cols]
 
-            # Excel 生成
+            # Excel 生成（保持原逻辑）
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 merged_final.to_excel(writer, index=False, sheet_name='补货数据')
@@ -615,7 +642,6 @@ if "df_vis" in st.session_state:
         sales_col = f'{period}销售额'
         profit_col = '订单毛利润'
         ad_cost_col = '广告花费'
-        ad_sales_col = '广告销售额'
         supply_col = '总供给'
         demand_col = '预测日销量'
 
